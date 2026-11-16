@@ -150,6 +150,35 @@ export async function exec(
   return result.rowCount ?? 0;
 }
 
+/** Connection-level failures (dropped socket, pool timeout), as opposed to SQL errors. */
+export function isTransientDbError(err: unknown): boolean {
+  const message = err instanceof Error ? `${err.message} ${(err as { cause?: Error }).cause?.message ?? ''}` : String(err);
+  const code = (err as { code?: string })?.code ?? '';
+  return (
+    /connection (?:terminated|timeout)|terminated unexpectedly|ECONNRESET|ETIMEDOUT|EPIPE|ECONNREFUSED|Client has encountered a connection error|timeout exceeded when trying to connect/i.test(message) ||
+    ['ECONNRESET', 'ETIMEDOUT', 'EPIPE', '57P01', '08006', '08003', '08001'].includes(code)
+  );
+}
+
+/**
+ * Retry `fn` when the database connection drops or times out. Only for
+ * statements that are safe to repeat (upserts, idempotent updates): a
+ * connection can die after the server applied the statement.
+ */
+export async function withDbRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (!isTransientDbError(err) || attempt === attempts - 1) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
+    }
+  }
+  throw lastError;
+}
+
 /** Run `fn` inside a transaction on a dedicated connection. */
 export async function tx<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
   const client = await getPool().connect();

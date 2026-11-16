@@ -50,3 +50,36 @@ describe('toDollarParams', () => {
     assert.equal(toDollarParams('SELECT 1'), 'SELECT 1');
   });
 });
+
+import { isTransientDbError, withDbRetry } from '../src/lib/db';
+
+describe('database retry', () => {
+  it('recognizes dropped and timed-out connections, not SQL errors', () => {
+    const dropped = Object.assign(new Error('Connection terminated due to connection timeout'), {
+      cause: new Error('Connection terminated unexpectedly'),
+    });
+    assert.ok(isTransientDbError(dropped));
+    assert.ok(isTransientDbError(Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })));
+    assert.ok(!isTransientDbError(Object.assign(new Error('column "x" does not exist'), { code: '42703' })));
+  });
+
+  it('retries transient failures and gives up on real ones', async () => {
+    let calls = 0;
+    const value = await withDbRetry(async () => {
+      calls++;
+      if (calls < 2) throw new Error('Connection terminated unexpectedly');
+      return 'ok';
+    }, 3);
+    assert.equal(value, 'ok');
+    assert.equal(calls, 2);
+
+    let sqlCalls = 0;
+    await assert.rejects(
+      withDbRetry(async () => {
+        sqlCalls++;
+        throw Object.assign(new Error('syntax error'), { code: '42601' });
+      }),
+    );
+    assert.equal(sqlCalls, 1);
+  });
+});

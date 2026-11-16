@@ -1,4 +1,4 @@
-import { exec, jsonArray, nowSec, one, q } from './db';
+import { exec, jsonArray, nowSec, one, q, withDbRetry } from './db';
 import { normalize, type NormalizedListing, type RawListing } from './parse';
 import { fetchSourceRaw } from './sources/registry';
 import { NO_FETCH_HOSTS } from './no-fetch';
@@ -213,6 +213,14 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
   /** Sources that returned only part of what they carry, so absence proves nothing. */
   const partialSources = new Set<string>();
 
+  /**
+   * Per-source status, written in one batch after fetching. The fetch phase
+   * can run for half an hour; writing after every source meant a single
+   * dropped database connection mid-fetch aborted the run and discarded
+   * everything fetched so far.
+   */
+  const statuses: { id: number; t: number; count: number | null; error: string | null }[] = [];
+
   await mapPool(sources, opts.concurrency ?? 6, async (row) => {
     const startMs = Date.now();
     const sourceKey = `${row.kind}:${row.token}`;
@@ -250,10 +258,7 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
         if (!bySource.has(emitted)) bySource.set(emitted, []);
       }
 
-      await exec(
-        'UPDATE source_configs SET last_sync_at = ?, last_count = ?, last_error = NULL WHERE id = ?',
-        [nowSec(), listings.length, row.id],
-      );
+      statuses.push({ id: row.id, t: nowSec(), count: listings.length, error: null });
 
       outcomes.push({
         source: sourceKey,
@@ -268,11 +273,7 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
       log(`  ${row.label}: ${listings.length} internships from ${raw.length} postings`);
     } catch (err) {
       const message = (err as Error).message ?? String(err);
-      await exec('UPDATE source_configs SET last_sync_at = ?, last_error = ? WHERE id = ?', [
-        nowSec(),
-        message.slice(0, 400),
-        row.id,
-      ]);
+      statuses.push({ id: row.id, t: nowSec(), count: null, error: message.slice(0, 400) });
       outcomes.push({
         source: sourceKey,
         kind: row.kind,
@@ -289,6 +290,16 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
     }
   });
 
+  await withDbRetry(() =>
+    exec(
+      `UPDATE source_configs sc
+       SET last_sync_at = u.t, last_count = COALESCE(u.count, sc.last_count), last_error = u.error
+       FROM jsonb_to_recordset(?::jsonb) AS u(id bigint, t bigint, count integer, error text)
+       WHERE sc.id = u.id`,
+      [JSON.stringify(statuses)],
+    ),
+  );
+
   // ---- Upsert everything we found. ----
   const all = [...bySource.values()].flat();
   const { inserted, updated, reopened, skipped } = await upsertListings(all);
@@ -298,7 +309,7 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
   // did not reach is unread, not delisted. The unseen sweep covers those.
   const healthySources = [...bySource.keys()].filter((source) => !partialSources.has(source));
   if (partialSources.size) log(`Skipping delisting for ${partialSources.size} partially read source(s).`);
-  const closed = await reconcileOpenness(bySource, healthySources);
+  const closed = await withDbRetry(() => reconcileOpenness(bySource, healthySources));
 
   // ---- Fill in descriptions the feeds didn't carry. ----
   if (opts.enrich && opts.enrich > 0) {
@@ -307,8 +318,8 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
   }
 
   // ---- Lifecycle sweep + dedupe. ----
-  const expired = await sweepLifecycle();
-  const duplicates = await markDuplicates();
+  const expired = await withDbRetry(() => sweepLifecycle());
+  const duplicates = await withDbRetry(() => markDuplicates());
 
   // ---- Learn about new employers from the URLs we just saw. ----
   let discovered = 0;
@@ -513,9 +524,8 @@ export async function upsertListings(listings: NormalizedListing[]): Promise<Ups
 
     const existing = new Map(
       (
-        await q<{ id: string; is_open: number }>(
-          'SELECT id, is_open FROM internships WHERE id = ANY(?)',
-          [ids],
+        await withDbRetry(() =>
+          q<{ id: string; is_open: number }>('SELECT id, is_open FROM internships WHERE id = ANY(?)', [ids]),
         )
       ).map((r) => [r.id, r.is_open]),
     );
@@ -537,9 +547,10 @@ export async function upsertListings(listings: NormalizedListing[]): Promise<Ups
     }
     if (batch.length === 0) continue;
 
-    const results = await q<{ id: string; was_insert: boolean }>(UPSERT_SQL, [
-      JSON.stringify(batch),
-    ]);
+    // An upsert is safe to repeat, so a dropped connection costs a retry, not the run.
+    const results = await withDbRetry(() =>
+      q<{ id: string; was_insert: boolean }>(UPSERT_SQL, [JSON.stringify(batch)]),
+    );
     for (const row of results) {
       if (row.was_insert) inserted++;
       else updated++;

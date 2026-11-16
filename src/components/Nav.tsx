@@ -7,14 +7,14 @@ import { createSupabaseBrowser } from '@/lib/supabase/client';
 import { ThemeToggle } from './ThemeToggle';
 
 const LINKS = [
-  { href: '/', label: 'Find internships', icon: SearchIcon, exact: true },
-  { href: '/dashboard', label: 'Dashboard', icon: GridIcon },
-  { href: '/tracker', label: 'Applications', icon: ListIcon },
-  { href: '/calendar', label: 'Calendar', icon: CalendarIcon },
-  { href: '/insights', label: 'Insights', icon: ChartIcon },
-  { href: '/saved', label: 'Saved & shortlist', icon: StarIcon },
-  { href: '/profile', label: 'Profile', icon: UserIcon },
-  { href: '/sources', label: 'Sources & sync', icon: RefreshIcon },
+  { href: '/', label: 'Find internships', short: 'Jobs', icon: SearchIcon, exact: true },
+  { href: '/dashboard', label: 'Dashboard', short: 'Home', icon: GridIcon },
+  { href: '/tracker', label: 'Applications', short: 'Tracker', icon: ListIcon },
+  { href: '/saved', label: 'Saved & shortlist', short: 'Saved', icon: StarIcon },
+  { href: '/calendar', label: 'Calendar', short: 'Calendar', icon: CalendarIcon },
+  { href: '/insights', label: 'Insights', short: 'Insights', icon: ChartIcon },
+  { href: '/profile', label: 'Profile & resume', short: 'Resume', icon: UserIcon },
+  { href: '/sources', label: 'Sources & sync', short: 'Sources', icon: RefreshIcon },
 ];
 
 export function Nav() {
@@ -77,44 +77,46 @@ export function Nav() {
       </div>
 
       <nav
-        className={`no-print z-20 w-full shrink-0 border-b lg:sticky lg:top-0 lg:h-screen lg:w-60 lg:border-r lg:border-b-0 ${
+        className={`no-print z-20 w-full shrink-0 border-b lg:sticky lg:top-0 lg:h-screen lg:w-[84px] lg:border-r lg:border-b-0 ${
           open ? 'block' : 'hidden lg:block'
         }`}
         style={{ background: 'var(--surface-1)', borderColor: 'var(--line)' }}
         aria-label="Main navigation"
       >
         <div className="flex h-full flex-col">
-          <div className="hidden items-center justify-between px-4 py-4 lg:flex">
-            <Link href="/" className="flex items-center gap-2">
+          <div className="hidden justify-center py-4 lg:flex">
+            <Link href="/" aria-label="InternIndex home">
               <Logo />
-              <span className="text-[0.9375rem] font-semibold tracking-tight">InternIndex</span>
             </Link>
-            <ThemeToggle />
           </div>
 
-          <ul className="flex-1 space-y-0.5 p-2">
-            {LINKS.map(({ href, label, icon: Icon, exact }) => {
+          <ul className="flex-1 space-y-0.5 p-2 lg:space-y-1">
+            {LINKS.map(({ href, label, short, icon: Icon, exact }) => {
               const active = isActive(href, exact);
               return (
                 <li key={href}>
                   <Link
                     href={href}
                     aria-current={active ? 'page' : undefined}
-                    className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[0.8125rem] font-medium transition-colors"
+                    title={label}
+                    className="relative flex items-center gap-2.5 rounded-xl px-2.5 py-2 text-[0.8125rem] font-medium transition-colors hover:bg-[var(--surface-2)] lg:flex-col lg:gap-1 lg:px-1 lg:py-2.5 lg:text-[0.625rem] lg:font-semibold"
                     style={{
-                      background: active ? 'var(--accent-soft)' : 'transparent',
+                      background: active ? 'var(--accent-soft)' : undefined,
                       color: active ? 'var(--accent)' : 'var(--ink-secondary)',
                     }}
                   >
-                    <Icon />
-                    <span className="flex-1">{label}</span>
+                    <span className="lg:scale-125">
+                      <Icon />
+                    </span>
+                    <span className="flex-1 lg:hidden">{label}</span>
+                    <span className="hidden lg:block">{short}</span>
                     {href === '/' && counts?.open ? (
-                      <span className="tnum text-[0.6875rem]" style={{ color: 'var(--ink-muted)' }}>
+                      <span className="tnum text-[0.6875rem] lg:absolute lg:-top-1 lg:right-0 lg:rounded-full lg:bg-[var(--ink-primary)] lg:px-1.5 lg:text-[0.5625rem] lg:text-[var(--surface-1)]" style={{ color: 'var(--ink-muted)' }}>
                         {counts.open.toLocaleString()}
                       </span>
                     ) : null}
                     {href === '/tracker' && counts?.active ? (
-                      <span className="tnum text-[0.6875rem]" style={{ color: 'var(--ink-muted)' }}>
+                      <span className="tnum text-[0.6875rem] lg:hidden" style={{ color: 'var(--ink-muted)' }}>
                         {counts.active}
                       </span>
                     ) : null}
@@ -124,21 +126,32 @@ export function Nav() {
             })}
           </ul>
 
+          <div className="hidden justify-center pb-2 lg:flex">
+            <ThemeToggle />
+          </div>
           <div
             className="border-t p-3 text-[0.6875rem] leading-relaxed"
             style={{ borderColor: 'var(--line)', color: 'var(--ink-muted)' }}
           >
             {auth?.authenticated ? (
-              <div className="flex items-center justify-between gap-2">
-                <p className="min-w-0 truncate" title={auth.email ?? undefined}>
+              <div className="flex items-center justify-between gap-2 lg:flex-col lg:text-center">
+                <p className="min-w-0 truncate lg:hidden" title={auth.email ?? undefined}>
                   {auth.email ?? 'Signed in'}
                 </p>
+                <span
+                  className="hidden h-8 w-8 items-center justify-center rounded-full text-[0.75rem] font-semibold lg:flex"
+                  style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+                  title={auth.email ?? undefined}
+                  aria-hidden
+                >
+                  {(auth.email ?? '?')[0]?.toUpperCase()}
+                </span>
                 <button type="button" className="link shrink-0" onClick={signOut}>
                   Sign out
                 </button>
               </div>
             ) : auth ? (
-              <p>
+              <p className="lg:hidden">
                 <Link href="/login" className="link" style={{ color: 'var(--accent)' }}>
                   Sign in
                 </Link>{' '}

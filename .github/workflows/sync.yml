@@ -1,9 +1,20 @@
 # Keeps the internship catalog fresh.
 #
-# Every 2 hours: fetch every feed and a rotating slice of company boards,
-# reconcile which listings are still open (delistings, passed deadlines, stale
-# postings), merge duplicates, and link-check the least-recently-verified
-# listings so dead application links get closed.
+# Every 2 hours (on the hour's :17): a full pass. Fetch every feed and a
+# rotating slice of company boards, reconcile which listings are still open
+# (delistings, passed deadlines, stale postings), merge duplicates, and
+# link-check the least-recently-verified listings so dead links get closed.
+#
+# Every 2 hours in between (:47 on odd hours): a fresh-postings pass that reads
+# only the fast, high-churn feeds (the community GitHub lists, Hacker News,
+# Jane Street, Amazon) and a small board slice. It takes a few minutes, so new
+# roles show up within about an hour of being listed while the expensive full
+# pass keeps its 2-hour cadence.
+#
+# Free-tier budget: GitHub Actions minutes are unlimited for public
+# repositories. On a private repository the free plan includes 2,000 minutes a
+# month, which this schedule exceeds; there, delete the fresh-postings cron
+# line below and keep the 2-hour full pass (or run the full pass every 4h).
 #
 # The catalog tracks several thousand employer boards, so no single run touches
 # them all. Boards are picked least-recently-synced first and round-robin across
@@ -18,6 +29,7 @@ name: Sync internship catalog
 on:
   schedule:
     - cron: '17 */2 * * *'
+    - cron: '47 1-23/2 * * *'
   workflow_dispatch:
     inputs:
       max_boards:
@@ -29,6 +41,9 @@ on:
       kinds:
         description: 'Restrict to these source kinds (comma separated, blank for all)'
         default: ''
+      enrich:
+        description: 'Bare postings to fetch full descriptions for'
+        default: '400'
 
 concurrency:
   group: catalog-sync
@@ -53,14 +68,25 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           # Read through the environment rather than interpolated into the
           # script, so a dispatch input can never become shell syntax.
+          FRESH_PASS: ${{ github.event.schedule == '47 1-23/2 * * *' }}
           MAX_BOARDS: ${{ inputs.max_boards || '900' }}
+          ENRICH: ${{ inputs.enrich || '400' }}
           VERIFY: ${{ inputs.verify || '500' }}
           KINDS: ${{ inputs.kinds }}
         run: |
+          if [ "$FRESH_PASS" = "true" ]; then
+            # Fast feeds plus a small slice of the quickest ATS boards. The Muse
+            # and the slow enterprise ATSs wait for the full pass.
+            MAX_BOARDS=120
+            VERIFY=150
+            ENRICH=150
+            KINDS="github,hn,janestreet,amazon,greenhouse,lever,ashby"
+          fi
           npm run sync -- \
             --max-boards "$MAX_BOARDS" \
             --concurrency 14 \
             ${KINDS:+--kinds "$KINDS"} \
+            --enrich "$ENRICH" \
             --verify "$VERIFY"
 
       # Applies classifier changes to listings already in the catalog, rather

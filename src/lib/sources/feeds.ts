@@ -1,6 +1,6 @@
 import type { RawListing } from '../parse';
-import { decodeHtmlEntities } from '../util';
-import { getJson } from './http';
+import { canonicalApplyUrl, decodeHtmlEntities } from '../util';
+import { fetchText, getJson, mapPool } from './http';
 import { markPartial } from './partial';
 
 /**
@@ -33,27 +33,102 @@ interface GithubListing {
   source?: string;
 }
 
-const GITHUB_FEEDS: Record<string, { url: string; label: string }> = {
+type GithubFeed =
+  | { format: 'simplify-json'; url: string; label: string }
+  /**
+   * A README of markdown tables (Company | Role | Location | … | Apply | Posted).
+   * Each table's own header decides which column is which. `redirector` names
+   * hosts whose links are tracking redirects to follow to the employer's page.
+   */
+  | { format: 'markdown-table'; url: string; label: string; redirector?: RegExp }
+  /** Northwestern FinTech's quant list: one section per firm, then |Role|Links|. */
+  | { format: 'firm-sections'; url: string; label: string };
+
+/**
+ * The community lists roll over every year (Summer2026 → Summer2027). Each
+ * one carries off-season terms (Fall, Winter, Spring co-ops) alongside the
+ * summer cycle in the same file, so there is no separate off-season feed to
+ * read; the term is kept per listing.
+ */
+export const GITHUB_FEEDS: Record<string, GithubFeed> = {
   'simplify-summer': {
-    url: 'https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/dev/.github/scripts/listings.json',
-    label: 'SimplifyJobs Summer 2026',
+    format: 'simplify-json',
+    url: 'https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/dev/.github/scripts/listings.json',
+    label: 'SimplifyJobs Summer 2027 (+ off-season)',
   },
   'vansh-summer': {
-    url: 'https://raw.githubusercontent.com/vanshb03/Summer2026-Internships/dev/.github/scripts/listings.json',
-    label: 'vanshb03 Summer 2026',
+    format: 'simplify-json',
+    url: 'https://raw.githubusercontent.com/vanshb03/Summer2027-Internships/dev/.github/scripts/listings.json',
+    label: 'vanshb03 Summer 2027',
   },
   // New-grad postings are mostly not internships and get filtered out on the
-  // way in, but the archive names ~2,600 employer job boards, and every one it
-  // reveals is a board the discovery pass can crawl for internships directly.
+  // way in, but the archives name thousands of employer job boards, and every
+  // one they reveal is a board the discovery pass can crawl for internships.
   'simplify-newgrad': {
+    format: 'simplify-json',
     url: 'https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/.github/scripts/listings.json',
     label: 'SimplifyJobs New Grad',
   },
+  'vansh-newgrad': {
+    format: 'simplify-json',
+    url: 'https://raw.githubusercontent.com/vanshb03/New-Grad-2027/dev/.github/scripts/listings.json',
+    label: 'vanshb03 New Grad 2027',
+  },
+  'speedy-swe': {
+    format: 'markdown-table',
+    url: 'https://raw.githubusercontent.com/speedyapply/2027-SWE-College-Jobs/main/README.md',
+    label: 'speedyapply 2027 SWE internships (USA)',
+  },
+  'speedy-swe-intl': {
+    format: 'markdown-table',
+    url: 'https://raw.githubusercontent.com/speedyapply/2027-SWE-College-Jobs/main/INTERN_INTL.md',
+    label: 'speedyapply 2027 SWE internships (international)',
+  },
+  'speedy-ai': {
+    format: 'markdown-table',
+    url: 'https://raw.githubusercontent.com/speedyapply/2027-AI-College-Jobs/main/README.md',
+    label: 'speedyapply 2027 AI internships',
+  },
+  'zapply-intern': {
+    format: 'markdown-table',
+    url: 'https://raw.githubusercontent.com/zapplyjobs/Internships-2027/main/README.md',
+    label: 'zapplyjobs Internships 2027',
+    redirector: /(?:^|\.)zapply\.jobs$/,
+  },
+  'zapply-ml': {
+    format: 'markdown-table',
+    url: 'https://raw.githubusercontent.com/zapplyjobs/awesome-ml-internships-2027/main/README.md',
+    label: 'zapplyjobs ML internships 2027',
+    redirector: /(?:^|\.)zapply\.jobs$/,
+  },
+  'nwf-quant': {
+    format: 'firm-sections',
+    url: 'https://raw.githubusercontent.com/northwesternfintech/2027QuantInternships/main/README.md',
+    label: 'Northwestern FinTech 2027 Quant Internships',
+  },
+  'canada-2027': {
+    format: 'markdown-table',
+    url: 'https://raw.githubusercontent.com/negarprh/Canadian-Tech-Internships-2027/main/README.md',
+    label: 'Canadian Tech Internships 2027',
+  },
+  'jobbie-2027': {
+    format: 'markdown-table',
+    url: 'https://raw.githubusercontent.com/jobbie-bot/Summer-2027-Tech-Internships/main/README.md',
+    label: 'jobbie Summer 2027 Tech Internships',
+  },
 };
+
+export { canonicalApplyUrl } from '../util';
 
 export async function fetchGithubList(token: string): Promise<RawListing[]> {
   const feed = GITHUB_FEEDS[token];
   if (!feed) return [];
+  if (feed.format === 'markdown-table' || feed.format === 'firm-sections') {
+    const text = await fetchText(feed.url, { timeoutMs: 60_000 });
+    if (!text) return [];
+    const rows = feed.format === 'firm-sections' ? parseFirmSections(text, `github:${token}`) : parseMarkdownJobTable(text, `github:${token}`);
+    return feed.format === 'markdown-table' && feed.redirector ? resolveRedirects(rows, feed.redirector) : rows;
+  }
 
   const data = await getJson<GithubListing[]>(feed.url, { timeoutMs: 90_000 });
   if (!Array.isArray(data)) return [];
@@ -70,10 +145,10 @@ export async function fetchGithubList(token: string): Promise<RawListing[]> {
         company: item.company_name,
         companyUrl: item.company_url || null,
         title: item.title,
-        applyUrl: item.url,
+        applyUrl: canonicalApplyUrl(item.url),
         description: null, // these feeds are metadata-only
         locations: item.locations ?? [],
-        terms,
+        terms: terms.filter((t) => t && t !== 'N/A'),
         datePosted: item.date_posted ?? null,
         dateUpdated: item.date_updated ?? item.date_posted ?? null,
         categoryHint: item.category ?? '',
@@ -83,6 +158,220 @@ export async function fetchGithubList(token: string): Promise<RawListing[]> {
         activeFlag: item.active !== false,
       } satisfies RawListing;
     });
+}
+
+/**
+ * Read the speedyapply-style README tables. Rows look like
+ *
+ *   | <a href="…"><strong>Meta</strong></a> | Research Intern | Burlingame, CA | $50/hr | <a href="APPLY">…</a> | 5d |
+ *
+ * The age column ("5d", "3h", "2mo") is converted back to a posting date.
+ */
+export function parseMarkdownJobTable(markdown: string, source: string, now = Date.now()): RawListing[] {
+  const out: RawListing[] = [];
+  const cellText = (cell: string) =>
+    decodeHtmlEntities(cell.replace(/<[^>]+>/g, ' ').replace(/\*\*/g, '').replace(/\s+/g, ' ').trim());
+  const split = (line: string) => line.split('|').slice(1, -1).map((c) => c.trim());
+  // Tables differ in columns (the international one has no Salary), so each
+  // table's header decides which cell is which.
+  let columns: Record<string, number> | null = null;
+  let lastCompany = '';
+  let lastCompanyUrl: string | null = null;
+
+  for (const line of markdown.split('\n')) {
+    if (!line.startsWith('|')) continue;
+    if (/^\|\s*:?-{3}/.test(line)) continue;
+    const cells = split(line);
+    if (/^\|\s*Company\s*\|/i.test(line)) {
+      columns = {};
+      cells.forEach((name, i) => {
+        const key = cellText(name).toLowerCase();
+        if (/company|employer|firm/.test(key)) columns!.company = i;
+        else if (/position|role|title/.test(key)) columns!.title = i;
+        else if (/location/.test(key)) columns!.location = i;
+        else if (/salary|pay/.test(key)) columns!.salary = i;
+        else if (/visa|h-?1b|sponsor/.test(key)) columns!.visa = i;
+        // "Apply with <product>" columns link to a third-party flow, not the posting.
+        else if (/posting|apply|link/.test(key) && !/\bwith\b/.test(key) && columns!.link == null) columns!.link = i;
+        else if (/age|posted|date/.test(key)) columns!.age = i;
+      });
+      continue;
+    }
+    if (!columns || columns.company == null || columns.title == null || columns.link == null) continue;
+
+    let company = cellText(cells[columns.company] ?? '');
+    // The company cell links the employer's homepage, which is the best logo source there is.
+    let companyUrl = linkIn(cells[columns.company] ?? '');
+    if (companyUrl && /swejoblists|simplify\.jobs|zapply|jobbie|github\.com/.test(companyUrl)) companyUrl = null;
+    if (company === '↳' || !company) {
+      company = lastCompany;
+      companyUrl = lastCompanyUrl;
+    }
+    lastCompany = company;
+    lastCompanyUrl = companyUrl;
+    const title = cellText(cells[columns.title] ?? '');
+    const linkCell = cells[columns.link] ?? '';
+    const href = linkIn(linkCell);
+    if (!company || !title || !href) continue;
+
+    const posted = columns.age != null ? parseAge(cellText(cells[columns.age] ?? ''), now) : null;
+    const visa = columns.visa != null ? cellText(cells[columns.visa] ?? '') : '';
+
+    const salary = columns.salary != null ? cellText(cells[columns.salary] ?? '') : '';
+    const pay = /\$\s?([\d,.]+)\s*\/\s*(hr|hour|mo|month|yr|year)/i.exec(salary);
+    const periods: Record<string, string> = { hr: 'hour', hour: 'hour', mo: 'month', month: 'month', yr: 'year', year: 'year' };
+
+    const applyUrl = canonicalApplyUrl(decodeHtmlEntities(href));
+    out.push({
+      source,
+      sourceKind: 'aggregator',
+      sourceId: applyUrl,
+      company,
+      companyUrl,
+      title,
+      applyUrl,
+      description: null,
+      locations: columns.location != null
+        ? cellText(cells[columns.location] ?? '').split(/\s*;\s*/).map((l) => l.replace(/\s*\+\d+$/, '')).filter(Boolean)
+        : [],
+      terms: [],
+      datePosted: posted,
+      dateUpdated: posted,
+      categoryHint: '',
+      salaryMin: pay ? Number.parseFloat(pay[1].replace(/,/g, '')) : null,
+      salaryMax: null,
+      salaryPeriod: pay ? periods[pay[2].toLowerCase()] ?? null : null,
+      salaryCurrency: pay ? 'USD' : null,
+      // "✅ Sponsor" / "🟢 Yes" style columns; "Likely" is not a promise, so it stays unknown.
+      sponsorshipHint: /sponsor|yes|✅|🟢/i.test(visa) && !/no\b|❌|likely/i.test(visa) ? 'Offers Sponsorship' : /no\b|❌/i.test(visa) ? 'Does Not Offer Sponsorship' : null,
+      activeFlag: true,
+    });
+  }
+  return out;
+}
+
+/** First link in a cell: an HTML href or a markdown [text](url). */
+function linkIn(cell: string): string | null {
+  return /href="([^"]+)"/.exec(cell)?.[1] ?? /\]\((https?:[^)\s]+)\)/.exec(cell)?.[1] ?? /\((https?:[^)\s]+)\)/.exec(cell)?.[1] ?? null;
+}
+
+/** "12m", "3h", "5d", "2w", "2mo", or a date like "2026-11-15" / "Nov 13, 2026". */
+export function parseAge(text: string, now = Date.now()): number | null {
+  const rel = /^(\d+)\s*(m(?!o)|min|h|d|w|mo|y)/i.exec(text.trim());
+  if (rel) {
+    const unit = rel[2].toLowerCase();
+    const days: Record<string, number> = { m: 1 / 1440, min: 1 / 1440, h: 1 / 24, d: 1, w: 7, mo: 30, y: 365 };
+    return Math.floor((now - Number(rel[1]) * days[unit] * 86_400_000) / 1000);
+  }
+  const t = Date.parse(text.trim());
+  return Number.isFinite(t) && t <= now + 86_400_000 ? Math.floor(t / 1000) : null;
+}
+
+const QUANT_ROLES: Record<string, string> = {
+  QR: 'Quantitative Research',
+  QT: 'Quantitative Trading',
+  QD: 'Quantitative Developer',
+  SWE: 'Software Engineering',
+  DS: 'Data Science',
+  ML: 'Machine Learning',
+  RA: 'Research Analyst',
+  OPS: 'Trading Operations',
+};
+
+/**
+ * Northwestern FinTech's list: a "## Firm" heading, a **Website** line, then a
+ * |Role|Links| table whose link cells hold one or more [✅ variant](url).
+ */
+export function parseFirmSections(markdown: string, source: string): RawListing[] {
+  const out: RawListing[] = [];
+  let firm = '';
+  let website: string | null = null;
+  let locations: string[] = [];
+  for (const line of markdown.split('\n')) {
+    const heading = /^##\s+(.+?)\s*$/.exec(line);
+    if (heading) {
+      firm = /contributing|using this/i.test(heading[1]) ? '' : heading[1].trim();
+      website = null;
+      locations = [];
+      continue;
+    }
+    if (!firm) continue;
+    const site = /^\*\*Website\*\*:\s*\[[^\]]*\]\(([^)]+)\)/.exec(line);
+    if (site) website = site[1];
+    const where = /^\*\*Locations?\*\*:\s*(.+)$/.exec(line);
+    if (where) locations = where[1].split(/[,;/]/).map((l) => l.trim()).filter(Boolean);
+    if (!line.startsWith('|') || /^\|\s*-|^\|\s*Role\s*\|/i.test(line)) continue;
+    const [roleCell = '', linksCell = ''] = line.split('|').slice(1, -1);
+    const code = cellTextPlain(roleCell).toUpperCase();
+    const role = QUANT_ROLES[code] ?? cellTextPlain(roleCell);
+    for (const m of linksCell.matchAll(/\[([^\]]*)\]\((https?:[^)\s]+)\)/g)) {
+      // ✅ marks an open application; ❌ or 🔒 mark closed ones.
+      if (/❌|🔒|closed/i.test(m[1])) continue;
+      const variant = m[1].replace(/✅/g, '').trim();
+      const applyUrl = canonicalApplyUrl(m[2]);
+      out.push({
+        source,
+        sourceKind: 'aggregator',
+        sourceId: applyUrl,
+        company: firm,
+        companyUrl: website,
+        title: `${role} Intern${variant ? ` (${variant})` : ''}`,
+        applyUrl,
+        description: null,
+        locations,
+        terms: ['Summer 2027'],
+        datePosted: null,
+        dateUpdated: null,
+        categoryHint: 'Quant',
+        activeFlag: true,
+      });
+    }
+  }
+  return out;
+}
+
+function cellTextPlain(cell: string): string {
+  return decodeHtmlEntities(cell.replace(/<[^>]+>/g, ' ').replace(/\*\*/g, '').replace(/\s+/g, ' ').trim());
+}
+
+/**
+ * Follow tracking redirects (e.g. zapply.jobs/l/d/…) to the employer's own
+ * posting, so the stored link is the real application page and discovery can
+ * register the board. Only the redirect header is read, never the page; at
+ * most 300 per run, and an unresolved link is kept as it was.
+ */
+async function resolveRedirects(rows: RawListing[], redirector: RegExp): Promise<RawListing[]> {
+  const pending = rows.filter((r) => {
+    try {
+      return redirector.test(new URL(r.applyUrl).hostname);
+    } catch {
+      return false;
+    }
+  });
+  const budget = pending.slice(0, 300);
+  await mapPool(budget, 4, async (row) => {
+    const target = await finalLocation(row.applyUrl);
+    if (target) row.applyUrl = canonicalApplyUrl(target);
+  });
+  return rows;
+}
+
+async function finalLocation(url: string): Promise<string | null> {
+  let current = url;
+  for (let hop = 0; hop < 4; hop++) {
+    try {
+      const res = await fetch(current, { method: 'GET', redirect: 'manual', headers: { 'User-Agent': 'InternIndex/1.0 (+https://github.com/PranavG5/internfinder)' } });
+      const next = res.headers.get('location');
+      void res.body?.cancel();
+      if (res.status < 300 || res.status >= 400 || !next) return hop === 0 ? null : current;
+      current = new URL(next, current).toString();
+      // Stop as soon as we leave the redirector.
+      if (!/zapply\.jobs/.test(new URL(current).hostname)) return current;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 // ------------------------------------------------------------------ RemoteOK
@@ -271,6 +560,8 @@ export async function fetchMuse(opts: { budget?: number } = {}): Promise<RawList
   const found = new Map<number, MuseJob>();
   const key = process.env.MUSE_API_KEY;
   let requests = 0;
+  /** Requests that came back with a JSON body (a 403 challenge page does not). */
+  let answered = 0;
   /** Whether anything was left unread, which makes the result a partial view. */
   let truncated = false;
 
@@ -293,6 +584,7 @@ export async function fetchMuse(opts: { budget?: number } = {}): Promise<RawList
         timeoutMs: 30_000,
         tolerate: [400, 403, 404],
       });
+      if (data) answered++;
       const batch = data?.results ?? [];
       for (const job of batch) if (job.id) found.set(job.id, job);
       pageCount = data?.page_count ?? 0;
@@ -317,6 +609,14 @@ export async function fetchMuse(opts: { budget?: number } = {}): Promise<RawList
   if (total > MUSE_MAX_PAGES) {
     await read(null, true, MUSE_MAX_PAGES);
     truncated = true;
+  }
+
+  // Every request refused means the API is unreachable (since late 2026 it
+  // sits behind a Cloudflare bot challenge that answers 403), not that every
+  // internship closed. Failing here keeps reconciliation from delisting the
+  // whole Muse catalog; the unseen sweep retires it gradually instead.
+  if (requests > 0 && answered === 0) {
+    throw new Error('The Muse API refused every request (HTTP 403 bot challenge)');
   }
 
   const oldest = Date.now() - MUSE_MAX_AGE_DAYS * 86_400_000;

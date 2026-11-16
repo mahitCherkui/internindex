@@ -18,7 +18,9 @@ export type BoardKind =
   | 'bamboohr'
   | 'breezy'
   | 'personio'
-  | 'jibe';
+  | 'jibe'
+  | 'recruitee'
+  | 'gem';
 
 /** Per-employer board providers, in the order they matter for coverage. */
 export const BOARD_KINDS: BoardKind[] = [
@@ -36,11 +38,15 @@ export const BOARD_KINDS: BoardKind[] = [
   'breezy',
   'personio',
   'jibe',
+  'recruitee',
+  'gem',
 ];
 
 /** Cross-company feeds, which are configured once rather than per employer. */
 export const FEED_KINDS = [
   'github',
+  'hn',
+  'janestreet',
   'amazon',
   'muse',
   'orise',
@@ -69,7 +75,12 @@ export const KIND_LABELS: Record<string, string> = {
   breezy: 'Breezy',
   personio: 'Personio',
   jibe: 'Jibe careers site (iCIMS)',
+  recruitee: 'Recruitee',
+  gem: 'Gem',
   github: 'Community lists',
+  hn: "Hacker News · Who's Hiring",
+  janestreet: 'Jane Street',
+  import: 'Imported by you',
   amazon: 'Amazon',
   muse: 'The Muse',
   orise: 'ORISE research programs',
@@ -180,9 +191,11 @@ export const ROLE_FAMILIES = [
   'it-support',
   'product-management',
   'product-design',
+  'ux-research',
   'graphic-design',
   'quant-trading',
   'quant-research',
+  'quant-dev',
   'investment-banking',
   'finance-general',
   'accounting',
@@ -219,6 +232,40 @@ export const ROLE_FAMILIES = [
   'other',
 ] as const;
 export type RoleFamily = (typeof ROLE_FAMILIES)[number];
+
+/** Display names for role families where the slug alone reads poorly. */
+export const ROLE_FAMILY_LABELS: Record<string, string> = {
+  'swe-general': 'Software Engineering (general)',
+  frontend: 'Frontend',
+  backend: 'Backend / Distributed Systems',
+  fullstack: 'Full Stack',
+  mobile: 'Mobile (iOS / Android)',
+  devops: 'Infrastructure / SRE / DevOps',
+  embedded: 'Embedded / Firmware',
+  'game-dev': 'Game Development',
+  'qa-test': 'QA / Test Automation',
+  'data-engineering': 'Data Engineering',
+  'data-science': 'Data Science',
+  'data-analyst': 'Data Analyst',
+  'machine-learning': 'ML / AI',
+  'research-scientist': 'Research Scientist',
+  security: 'Security',
+  'it-support': 'IT / Systems',
+  'product-management': 'Product / Program Management',
+  'product-design': 'Product / UX Design',
+  'ux-research': 'UX Research',
+  'quant-trading': 'Quant Trading',
+  'quant-research': 'Quant Research',
+  'quant-dev': 'Quant Developer',
+  electrical: 'Hardware / Electrical',
+};
+
+export function roleFamilyLabel(family: string): string {
+  return (
+    ROLE_FAMILY_LABELS[family] ??
+    family.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+  );
+}
 
 /** Application pipeline. Order matters: it defines the funnel and Kanban columns. */
 export const APP_STATUSES = [
@@ -365,13 +412,21 @@ export interface Internship {
   duplicate_of: string | null;
   quality: number;
   raw_json: string | null;
+  seen_sources_json: string;
+  keywords_json: string;
+  grad_year_min: number | null;
+  grad_year_max: number | null;
+  majors_json: string;
+  underclass_ok: number | null;
+  enriched_at?: number | null;
 }
 
 /** What the API returns to the client: DB row with JSON parsed and extras attached. */
 export interface InternshipView
   extends Omit<
     Internship,
-    'locations_json' | 'terms_json' | 'degrees_json' | 'class_years_json' | 'skills_json' | 'tags_json' | 'raw_json'
+    | 'locations_json' | 'terms_json' | 'degrees_json' | 'class_years_json' | 'skills_json' | 'tags_json' | 'raw_json'
+    | 'seen_sources_json' | 'keywords_json' | 'majors_json'
   > {
   locations: string[];
   terms: string[];
@@ -384,6 +439,30 @@ export interface InternshipView
   application_id: number | null;
   application_status: AppStatus | null;
   fit: FitResult | null;
+  /** Every source this role was seen on (canonical row first). */
+  seen_sources: string[];
+  /** Top ATS keywords, highest weight first. */
+  keywords: { term: string; count: number; category: string }[];
+  majors: string[];
+  /** Resume keyword match, when the profile has skills or a resume. */
+  match: MatchResult | null;
+  /** Can this student apply given their year/grad date? */
+  eligibility: EligibilityBadge;
+  /** Personal recommendation score (0–100) from the student's resume, or null without one. */
+  recommend: number | null;
+}
+
+export interface MatchResult {
+  score: number;
+  have: string[];
+  missing: string[];
+}
+
+export interface EligibilityBadge {
+  status: 'eligible' | 'likely' | 'unclear' | 'ineligible';
+  label: string;
+  /** Concrete reasons, e.g. "Requires 2027 grads; you graduate in 2030". */
+  flags: string[];
 }
 
 export interface FitReason {
@@ -465,9 +544,22 @@ export interface Profile {
   calendar_token: string;
   created_at: number;
   updated_at: number;
+  phone?: string | null;
+  linkedin_url?: string | null;
+  github_url?: string | null;
+  portfolio_url?: string | null;
+  pronouns?: string | null;
+  quick_answers_json?: string;
+  preferred_roles_json?: string;
+  digest_enabled?: number;
+  digest_seen_at?: number | null;
 }
 
 export interface ProfileView extends Profile {
+  /** Saved free-form answers, e.g. { "Why this company?": "…" }. */
+  quick_answers: Record<string, string>;
+  /** Role families inferred from the resume (e.g. data-science, backend). */
+  preferred_roles: string[];
   skills: string[];
   preferred_seasons: string[];
   preferred_years: string[];

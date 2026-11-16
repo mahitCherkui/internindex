@@ -1,4 +1,5 @@
 import { handler, ok, readJson, requireUserId } from '@/lib/api';
+import { isDemo } from '@/lib/demo';
 import { toggleBookmark } from '@/lib/repo';
 
 export const dynamic = 'force-dynamic';
@@ -6,6 +7,13 @@ export const dynamic = 'force-dynamic';
 /** POST /api/internships/:id/bookmark: toggle the shortlist flag. */
 export const POST = handler(
   async (request: Request, { params }: { params: Promise<{ id: string }> }) => {
+    if (isDemo()) {
+      const { demoSaved } = await import('@/lib/demo');
+      const { id } = await params;
+      if (demoSaved.has(id)) demoSaved.delete(id);
+      else demoSaved.add(id);
+      return ok({ bookmarked: demoSaved.has(id) });
+    }
     const auth = await requireUserId();
     if (auth instanceof Response) return auth;
 

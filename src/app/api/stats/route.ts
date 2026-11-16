@@ -1,4 +1,5 @@
 import { handler, ok } from '@/lib/api';
+import { isDemo } from '@/lib/demo';
 import { getAuthUser } from '@/lib/auth';
 import { catalogStats } from '@/lib/query';
 import { dashboardStats } from '@/lib/repo';
@@ -7,6 +8,7 @@ export const dynamic = 'force-dynamic';
 
 /** GET /api/stats: everything the dashboard needs in one call. */
 export const GET = handler(async () => {
+  if (isDemo()) return ok({ dashboard: null, catalog: { open: 0 }, authenticated: true, email: 'demo@example.com' });
   const user = await getAuthUser();
   const [dashboard, catalog] = await Promise.all([
     user ? dashboardStats(user.id) : Promise.resolve(null),

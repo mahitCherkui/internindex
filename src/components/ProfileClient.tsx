@@ -1,10 +1,12 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { CLASS_YEARS, DEGREES, FIELDS, SEASONS, type ProfileView } from '@/lib/types';
 import { allSkills } from '@/lib/parse/skills';
+import { resumeKeywords } from '@/lib/parse/keywords';
 import { fromDateInput, toDateInput } from '@/lib/util';
 import { Field, PageHeader, SectionTitle } from './ui';
+import { ResumeImport } from './ResumeImport';
 
 const YEAR_OPTIONS = (() => {
   const current = new Date().getFullYear();
@@ -20,6 +22,8 @@ export function ProfileClient({ initial }: { initial: ProfileView }) {
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  const [resumeDraft, setResumeDraft] = useState(initial.resume_text ?? '');
+  const resumeTerms = useMemo(() => resumeKeywords(resumeDraft), [resumeDraft]);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const flash = (message: string) => {
@@ -113,6 +117,18 @@ export function ProfileClient({ initial }: { initial: ProfileView }) {
             the search dramatically more useful. Every field is optional and saves as you type.
           </div>
         ) : null}
+
+        {/* Resume upload: fills everything below */}
+        <section id="resume">
+          <SectionTitle>{profile.resume_text ? 'Update your resume' : 'Start with your resume'}</SectionTitle>
+          <div className="card p-4">
+            <p className="mb-3 text-[0.8125rem]" style={{ color: 'var(--ink-secondary)' }}>
+              Upload it and we&rsquo;ll fill in your school, major, graduation date, class year, GPA, contact links and skills,
+              and learn which kinds of roles your experience points to. You review everything before it&rsquo;s saved.
+            </p>
+            <ResumeImport onSaved={() => window.location.reload()} />
+          </div>
+        </section>
 
         {/* About you */}
         <section>
@@ -365,6 +381,46 @@ export function ProfileClient({ initial }: { initial: ProfileView }) {
           </div>
         </section>
 
+        {/* Quick copy */}
+        <section id="quick-copy">
+          <SectionTitle>Quick copy answers</SectionTitle>
+          <div className="card space-y-4 p-4">
+            <p className="text-[0.8125rem]" style={{ color: 'var(--ink-secondary)' }}>
+              Shown in the Quick copy panel on the search page (shortcut <span className="kbd">c</span>) so you can paste into
+              application forms in one click. Name, email, school, major and graduation date come from the fields above.
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Phone">
+                <input className="input" type="tel" defaultValue={profile.phone ?? ''} onBlur={(e) => save({ phone: e.target.value.trim() || null })} />
+              </Field>
+              <Field label="Pronouns (optional)">
+                <input className="input" defaultValue={profile.pronouns ?? ''} onBlur={(e) => save({ pronouns: e.target.value.trim() || null })} />
+              </Field>
+              <Field label="LinkedIn URL">
+                <input className="input" type="url" defaultValue={profile.linkedin_url ?? ''} onBlur={(e) => save({ linkedin_url: e.target.value.trim() || null })} placeholder="https://www.linkedin.com/in/…" />
+              </Field>
+              <Field label="GitHub URL">
+                <input className="input" type="url" defaultValue={profile.github_url ?? ''} onBlur={(e) => save({ github_url: e.target.value.trim() || null })} placeholder="https://github.com/…" />
+              </Field>
+              <Field label="Portfolio / website">
+                <input className="input" type="url" defaultValue={profile.portfolio_url ?? ''} onBlur={(e) => save({ portfolio_url: e.target.value.trim() || null })} />
+              </Field>
+            </div>
+            <QuickAnswersEditor
+              answers={profile.quick_answers ?? {}}
+              onSave={(quick_answers) => save({ quick_answers })}
+            />
+            <label className="flex items-center gap-2 text-[0.8125rem]">
+              <input
+                type="checkbox"
+                defaultChecked={profile.digest_enabled !== 0}
+                onChange={(e) => save({ digest_enabled: e.target.checked ? 1 : 0 })}
+              />
+              Show a daily digest of new roles matching my saved searches
+            </label>
+          </div>
+        </section>
+
         {/* Skills & resume */}
         <section>
           <SectionTitle>Skills &amp; resume</SectionTitle>
@@ -384,16 +440,33 @@ export function ProfileClient({ initial }: { initial: ProfileView }) {
 
             <Field
               label="Resume text"
-              hint="Paste your resume. Skills are extracted from it automatically and folded into fit scoring. It is never uploaded anywhere."
+              hint="Paste your resume. Every posting's ATS keywords are matched against it to give a match % and a You have / Missing list. Stored in your account and used only for matching."
             >
               <textarea
                 className="textarea"
                 style={{ minHeight: '10rem' }}
                 defaultValue={profile.resume_text ?? ''}
+                onChange={(e) => setResumeDraft(e.target.value)}
                 onBlur={(e) => save({ resume_text: e.target.value })}
                 placeholder="Paste the plain text of your resume here…"
               />
             </Field>
+
+            {resumeTerms.length > 0 ? (
+              <div>
+                <p className="label">Keywords recognized in your resume ({resumeTerms.length})</p>
+                <div className="flex flex-wrap gap-1">
+                  {resumeTerms.map((term) => (
+                    <span key={term} className="chip chip-good">
+                      {term}
+                    </span>
+                  ))}
+                </div>
+                <p className="mt-1.5 text-[0.6875rem]" style={{ color: 'var(--ink-muted)' }}>
+                  A posting keyword you have but that isn&rsquo;t listed here won&rsquo;t count: use the posting&rsquo;s exact wording (for example &ldquo;A/B testing&rdquo;, &ldquo;scikit-learn&rdquo;).
+                </p>
+              </div>
+            ) : null}
           </div>
         </section>
 
@@ -402,7 +475,7 @@ export function ProfileClient({ initial }: { initial: ProfileView }) {
           <SectionTitle>Your data</SectionTitle>
           <div className="card space-y-3 p-4">
             <p className="text-[0.8125rem]" style={{ color: 'var(--ink-secondary)' }}>
-              Everything lives in a local SQLite file. Export a full backup any time, or bring in
+              Everything is stored in your account. Export a full backup any time, or bring in
               applications you have been tracking elsewhere.
             </p>
 
@@ -506,6 +579,56 @@ function ChipPicker({
           {expanded ? 'Show fewer' : `Show all ${options.length}`}
         </button>
       ) : null}
+    </div>
+  );
+}
+
+/** Free-form saved answers ("Why this company?", "Expected start date"), edited as a list. */
+function QuickAnswersEditor({
+  answers,
+  onSave,
+}: {
+  answers: Record<string, string>;
+  onSave: (answers: Record<string, string>) => void;
+}) {
+  const [rows, setRows] = useState<[string, string][]>(() => {
+    const entries = Object.entries(answers);
+    return entries.length ? entries : [['Earliest start date', ''], ['How did you hear about us?', '']];
+  });
+  const commit = (next: [string, string][]) => {
+    setRows(next);
+    onSave(Object.fromEntries(next.filter(([k, v]) => k.trim() && v.trim())));
+  };
+  return (
+    <div>
+      <p className="label">Saved answers</p>
+      <div className="space-y-2">
+        {rows.map(([question, answer], i) => (
+          <div key={`${i}:${question}:${answer}`} className="grid gap-2 sm:grid-cols-[14rem_1fr_auto]">
+            <input
+              className="input"
+              aria-label="Question"
+              defaultValue={question}
+              onBlur={(e) => commit(rows.map((r, j) => (j === i ? [e.target.value, r[1]] : r)))}
+              placeholder="Question"
+            />
+            <textarea
+              className="textarea"
+              style={{ minHeight: '2.4rem' }}
+              aria-label={`Answer to ${question || 'question'}`}
+              defaultValue={answer}
+              onBlur={(e) => commit(rows.map((r, j) => (j === i ? [r[0], e.target.value] : r)))}
+              placeholder="Your answer"
+            />
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => commit(rows.filter((_, j) => j !== i))} aria-label="Remove answer">
+              ✕
+            </button>
+          </div>
+        ))}
+      </div>
+      <button type="button" className="btn btn-sm mt-2" onClick={() => setRows([...rows, ['', '']])}>
+        + Add answer
+      </button>
     </div>
   );
 }

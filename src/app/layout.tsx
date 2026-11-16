@@ -1,6 +1,10 @@
 import type { Metadata, Viewport } from 'next';
+import { Inter } from 'next/font/google';
 import './globals.css';
 import { Nav } from '@/components/Nav';
+
+// Self-hosted at build time by next/font, so no request reaches Google at runtime.
+const inter = Inter({ subsets: ['latin'], display: 'swap', variable: '--font-inter' });
 
 const TITLE = 'InternIndex: find open internships, track every application';
 const DESCRIPTION =
@@ -67,8 +71,8 @@ export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
   themeColor: [
-    { media: '(prefers-color-scheme: light)', color: '#f9f9f7' },
-    { media: '(prefers-color-scheme: dark)', color: '#0d0d0d' },
+    { media: '(prefers-color-scheme: light)', color: '#fafafb' },
+    { media: '(prefers-color-scheme: dark)', color: '#0a0a0c' },
   ],
 };
 
@@ -91,7 +95,7 @@ const themeBootstrap = `
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" className={inter.variable} suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeBootstrap }} />
       </head>

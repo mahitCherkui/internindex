@@ -1,4 +1,5 @@
 import { fail, handler, ok, parseId, readJson, requireUserId } from '@/lib/api';
+import { isDemo } from '@/lib/demo';
 import {
   deleteApplication,
   getApplication,
@@ -35,6 +36,7 @@ export const GET = handler(async (_request: Request, { params }: Ctx) => {
 
 /** PATCH /api/applications/:id: update fields. Status changes are logged. */
 export const PATCH = handler(async (request: Request, { params }: Ctx) => {
+  if (isDemo()) return ok({ application: { id: 1, status: 'applied' } });
   const auth = await requireUserId();
   if (auth instanceof Response) return auth;
 

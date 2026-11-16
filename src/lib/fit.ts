@@ -1,5 +1,6 @@
+import { matchKeywords, resumeKeywords, type Keyword } from './parse/keywords';
 import { extractSkills, skillOverlap } from './parse/skills';
-import type { FitReason, FitResult, ProfileView } from './types';
+import type { EligibilityBadge, FitReason, FitResult, MatchResult, ProfileView } from './types';
 import { clamp, daysUntil, toHourly } from './util';
 
 /** Only the listing fields fit scoring actually reads. */
@@ -446,4 +447,154 @@ export function resumeSkills(profile: ProfileView): string[] {
   // Resume text is matched with the same vocabulary used on listings so the
   // two sides are directly comparable.
   return [...new Set([...fromList, ...extractSkills(profile.resume_text, 40)])];
+}
+
+// ------------------------------------------------------------ ATS keyword match
+
+const resumeTermsCache = new WeakMap<ProfileView, string[]>();
+
+/** Every vocabulary term the student claims: listed skills plus what the resume mentions. */
+export function profileTerms(profile: ProfileView): string[] {
+  const cached = resumeTermsCache.get(profile);
+  if (cached) return cached;
+  const terms = [...new Set([...(profile.skills ?? []), ...resumeKeywords(profile.resume_text)])];
+  resumeTermsCache.set(profile, terms);
+  return terms;
+}
+
+/**
+ * "You have: X, Y / Missing: Z" for one posting. The score is the weighted
+ * share of the posting's top keywords the student's resume or skill list
+ * already contains, so mirroring a missing keyword moves it directly.
+ */
+export function computeMatch(keywords: Keyword[], profile: ProfileView | null): MatchResult | null {
+  if (!profile) return null;
+  const mine = profileTerms(profile);
+  const result = matchKeywords(keywords, mine);
+  if (result.score == null) return null;
+  return {
+    score: result.score,
+    have: result.have.map((k) => k.term),
+    missing: result.missing.map((k) => k.term),
+  };
+}
+
+// ------------------------------------------------------------ eligibility badge
+
+export interface EligibilityCandidate {
+  class_years: string[];
+  degrees: string[];
+  grad_year_min: number | null;
+  grad_year_max: number | null;
+  underclass_ok: number | null;
+  majors: string[];
+  year: number | null;
+}
+
+const UNDERCLASS = new Set(['Freshman', 'Sophomore']);
+
+function gradLabel(min: number, max: number): string {
+  return min === max ? `${min}` : `${min}–${max}`;
+}
+
+/**
+ * Can this student apply, given their class year and graduation date? Hard
+ * blockers from fit scoring (citizenship, sponsorship, GPA, degree) count too,
+ * so the badge on a card is the one place to look.
+ */
+export function computeEligibility(
+  listing: EligibilityCandidate,
+  profile: ProfileView | null,
+  blockers: string[] = [],
+): EligibilityBadge {
+  const flags = [...blockers];
+  const year = profile?.class_year ?? null;
+  const grad = profile?.grad_year ?? null;
+  const underclassStudent = year != null && UNDERCLASS.has(year);
+
+  // Graduation window, the most precise signal when a posting states one.
+  if (grad != null && listing.grad_year_max != null && listing.grad_year_min != null) {
+    if (grad > listing.grad_year_max || grad < listing.grad_year_min) {
+      flags.push(`Requires ${gradLabel(listing.grad_year_min, listing.grad_year_max)} grads — you graduate in ${grad}`);
+    }
+  }
+  if (underclassStudent && listing.underclass_ok === 0 && !flags.some((f) => f.startsWith('Requires 20'))) {
+    flags.push(`Not open to ${year!.toLowerCase()}s (aimed at upperclass or graduate students)`);
+  }
+  if (year && listing.class_years.length > 0 && !listing.class_years.includes(year) && listing.underclass_ok !== 1) {
+    const order = ['Freshman', 'Sophomore', 'Junior', 'Senior', 'Graduate'];
+    const gap = Math.min(...listing.class_years.map((c) => Math.abs(order.indexOf(c) - order.indexOf(year))));
+    if (gap >= 2) flags.push(`Targets ${listing.class_years.join('/')}s; you're a ${year.toLowerCase()}`);
+  }
+
+  const soft: string[] = [];
+  if (profile?.major && listing.majors.length > 0) {
+    const mine = profile.major.toLowerCase();
+    const ok = listing.majors.some(
+      (m) => m === 'STEM / related field' || mine.includes(m.toLowerCase()) || m.toLowerCase().includes(mine),
+    );
+    if (!ok) soft.push(`Lists ${listing.majors.slice(0, 3).join(', ')} majors`);
+  }
+
+  if (flags.length > 0) {
+    return { status: 'ineligible', label: 'Not eligible', flags: [...flags, ...soft] };
+  }
+
+  const invited =
+    listing.underclass_ok === 1 ||
+    (year != null && listing.class_years.includes(year)) ||
+    (grad != null && listing.grad_year_min != null && grad >= listing.grad_year_min && grad <= (listing.grad_year_max ?? grad));
+
+  if (invited) {
+    const label = underclassStudent || (!year && listing.underclass_ok === 1) ? 'Open to fr/soph' : 'Eligible';
+    return { status: soft.length ? 'likely' : 'eligible', label: soft.length ? `${label} · check major` : label, flags: soft };
+  }
+  if (listing.underclass_ok === 0 && !profile) {
+    return { status: 'unclear', label: 'Juniors+ / grads', flags: soft };
+  }
+  return soft.length
+    ? { status: 'likely', label: 'Check major', flags: soft }
+    : { status: 'unclear', label: 'Year not stated', flags: soft };
+}
+
+// ------------------------------------------------------------ recommendation
+
+/**
+ * How strongly to recommend a posting to this student (0–100), from what their
+ * resume says rather than any fixed preference:
+ *   40% resume keyword match
+ *   30% role affinity: the posting's role family / field vs. what the resume's
+ *       experience and major point to (and any fields chosen on the profile)
+ *   20% eligibility: class year, graduation window, authorization, GPA
+ *   10% freshness: newer postings first among equals
+ * Returns null when the profile has no resume or skills to go on.
+ */
+export function computeRecommendation(
+  listing: { role_family: string; field: string; first_seen_at: number; date_posted: number | null },
+  match: MatchResult | null,
+  eligibility: EligibilityBadge,
+  profile: ProfileView | null,
+  now = Date.now(),
+): number | null {
+  if (!profile || (!profile.resume_text && !(profile.skills ?? []).length)) return null;
+
+  const matchPart = (match?.score ?? 0) / 100;
+
+  const roles = profile.preferred_roles ?? [];
+  const fields = profile.preferred_fields ?? [];
+  let affinity = 0.25;
+  const roleRank = roles.indexOf(listing.role_family);
+  if (roleRank >= 0) affinity = 1 - roleRank * 0.12;
+  else if (fields.includes(listing.field)) affinity = 0.7;
+  else if (!roles.length && !fields.length) affinity = 0.5;
+
+  const eligiblePart =
+    eligibility.status === 'eligible' ? 1 : eligibility.status === 'unclear' ? 0.65 : eligibility.status === 'likely' ? 0.5 : 0;
+
+  const ageDays = Math.max(0, (now / 1000 - (listing.date_posted ?? listing.first_seen_at)) / 86_400);
+  const fresh = Math.max(0, 1 - ageDays / 45);
+
+  const score = 0.4 * matchPart + 0.3 * affinity + 0.2 * eligiblePart + 0.1 * fresh;
+  // Roles you can't apply to never outrank ones you can.
+  return Math.round((eligibility.status === 'ineligible' ? Math.min(score, 0.3) : score) * 100);
 }

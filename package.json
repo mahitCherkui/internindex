@@ -16,6 +16,7 @@
     "seed": "node --import tsx scripts/seed.ts",
     "test": "node --import tsx --test test/*.test.ts",
     "verify-seeds": "node --import tsx scripts/verify-seeds.ts",
+    "audit-sources": "node --import tsx scripts/audit-sources.ts",
     "push-catalog": "node --import tsx scripts/push-catalog.ts",
     "og": "node --import tsx scripts/render-og.ts",
     "vercel-build": "next build"
@@ -24,10 +25,12 @@
     "@supabase/ssr": "^0.12.4",
     "@supabase/supabase-js": "^2.111.0",
     "@types/pg": "^8.20.3",
+    "mammoth": "^1.13.0",
     "next": "^15.5.22",
     "pg": "^8.22.0",
     "react": "19.0.0",
-    "react-dom": "19.0.0"
+    "react-dom": "19.0.0",
+    "unpdf": "^1.9.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.0.6",

@@ -1,5 +1,6 @@
 import { getPool, jsonArray, one, q } from './db';
-import { computeFit, type FitCandidate } from './fit';
+import { computeEligibility, computeFit, computeMatch, computeRecommendation, type FitCandidate } from './fit';
+import { keywordCategory, unpackKeywords, type Keyword } from './parse/keywords';
 import {
   toFtsQuery,
   type FacetBucket,
@@ -158,6 +159,20 @@ function buildClauses(
       now - query.postedWithinDays * DAY,
     ]);
   }
+  if (query.newToday) {
+    set('newToday', 'COALESCE(i.date_posted, i.first_seen_at - 259200) >= ?', [now - DAY]);
+  }
+  if (query.underclass) {
+    // Explicit "juniors and seniors only" postings go; unstated ones stay,
+    // because most postings that never mention class year take anyone enrolled.
+    if (profile?.grad_year) {
+      set('underclass', '(i.underclass_ok IS DISTINCT FROM 0 AND (i.grad_year_max IS NULL OR i.grad_year_max >= ?))', [
+        profile.grad_year,
+      ]);
+    } else {
+      set('underclass', 'i.underclass_ok IS DISTINCT FROM 0');
+    }
+  }
   if (query.minDuration != null) {
     set('minDuration', '(i.duration_weeks IS NULL OR i.duration_weeks >= ?)', [query.minDuration]);
   }
@@ -191,6 +206,13 @@ function buildClauses(
     } else {
       // An anonymous visitor has no shortlist; asking for it yields nothing.
       set('bookmarked', '1 = 0');
+    }
+  }
+  if (query.appliedOnly) {
+    if (userId) {
+      set('appliedOnly', 'i.id IN (SELECT internship_id FROM applications WHERE internship_id IS NOT NULL AND user_id = ?)', [userId]);
+    } else {
+      set('appliedOnly', '1 = 0');
     }
   }
   if (query.hideApplied && userId) {
@@ -230,6 +252,15 @@ function buildClauses(
          )`,
       );
     }
+    // Graduation window and class year, the same checks behind the card's
+    // eligibility badge, so this filter never shows a "Not eligible" role.
+    if (profile.grad_year) {
+      parts.push('(i.grad_year_min IS NULL OR i.grad_year_max IS NULL OR ? BETWEEN i.grad_year_min AND i.grad_year_max)');
+      args.push(profile.grad_year);
+    }
+    if (profile.class_year === 'Freshman' || profile.class_year === 'Sophomore') {
+      parts.push('i.underclass_ok IS DISTINCT FROM 0');
+    }
     if (parts.length) set('eligibleOnly', `(${parts.join(' AND ')})`, args);
   }
 
@@ -251,7 +282,10 @@ const ORDER_BY: Record<SortKey, string> = {
   relevance:
     // Fresh, well-described, deadline-bearing listings first.
     `i.quality DESC, COALESCE(i.date_posted, i.first_seen_at) DESC`,
-  newest: 'COALESCE(i.date_posted, i.first_seen_at) DESC',
+  // A posting's own date when it has one. Undated postings (feeds that never
+  // say when a role went up) rank as if seen three days earlier, so a feed
+  // without dates can't crowd out roles that were genuinely just posted.
+  newest: 'COALESCE(i.date_posted, i.first_seen_at - 259200) DESC, i.first_seen_at DESC',
   deadline: 'CASE WHEN i.deadline IS NULL THEN 1 ELSE 0 END, i.deadline ASC',
   pay: `CASE WHEN i.salary_min IS NULL THEN 1 ELSE 0 END,
         CASE i.salary_period
@@ -262,6 +296,8 @@ const ORDER_BY: Record<SortKey, string> = {
   company: 'lower(i.company) ASC, lower(i.title) ASC',
   title: 'lower(i.title) ASC',
   fit: 'i.quality DESC', // re-sorted in JS after fit scores are computed
+  match: 'i.quality DESC', // re-sorted in JS after match scores are computed
+  recommended: 'i.quality DESC', // re-sorted in JS after recommendation scores are computed
 };
 
 /** How many rows a fit-sorted search will score in memory before ranking. */
@@ -281,34 +317,48 @@ export async function searchInternships(
   const offset = (query.page - 1) * query.limit;
   let rows: Internship[];
 
-  const needsFitRanking = query.sort === 'fit' && profile != null;
+  // Fit and keyword match depend on the profile, so they can't be expressed
+  // in SQL. Score a bounded slice of matches in memory and rank those.
+  const needsFitRanking =
+    profile != null && (query.sort === 'fit' || query.sort === 'match' || query.sort === 'recommended' || query.minMatch != null);
   if (needsFitRanking) {
-    // Fit depends on the profile, so it can't be expressed in SQL. Score a
-    // bounded slice of matches and rank those.
+    // Score the freshest matches: a recommendation feed should favor what is new.
+    const order = query.sort === 'fit' || query.sort === 'match' || query.sort === 'recommended' ? ORDER_BY.newest : ORDER_BY[query.sort];
     rows = await q<Internship>(
-      `SELECT i.* FROM internships i ${where} ORDER BY ${ORDER_BY.relevance} LIMIT ?`,
+      `SELECT i.* FROM internships i ${where} ORDER BY ${order} LIMIT ?`,
       [...params, FIT_SORT_CEILING],
     );
   } else {
     rows = await q<Internship>(
-      `SELECT i.* FROM internships i ${where} ORDER BY ${ORDER_BY[query.sort]} LIMIT ? OFFSET ?`,
+      `SELECT i.* FROM internships i ${where} ORDER BY ${query.sort === 'recommended' ? ORDER_BY.newest : ORDER_BY[query.sort]} LIMIT ? OFFSET ?`,
       [...params, query.limit, offset],
     );
   }
 
   let views = await toViews(rows, profile, userId);
 
+  let filteredTotal = total;
   if (needsFitRanking) {
-    views.sort((a, b) => (b.fit?.score ?? 0) - (a.fit?.score ?? 0));
+    if (query.minMatch != null) {
+      views = views.filter((v) => (v.match?.score ?? 0) >= query.minMatch!);
+      filteredTotal = views.length;
+    }
+    if (query.sort === 'fit') views.sort((a, b) => (b.fit?.score ?? 0) - (a.fit?.score ?? 0));
+    if (query.sort === 'recommended') {
+      views.sort((a, b) => (b.recommend ?? -1) - (a.recommend ?? -1) || (b.date_posted ?? b.first_seen_at) - (a.date_posted ?? a.first_seen_at));
+    }
+    if (query.sort === 'match') {
+      views.sort((a, b) => (b.match?.score ?? -1) - (a.match?.score ?? -1) || (b.fit?.score ?? 0) - (a.fit?.score ?? 0));
+    }
     views = views.slice(offset, offset + query.limit);
   }
 
   return {
     rows: views,
-    total,
+    total: filteredTotal,
     page: query.page,
     limit: query.limit,
-    pages: Math.max(1, Math.ceil(total / query.limit)),
+    pages: Math.max(1, Math.ceil(filteredTotal / query.limit)),
   };
 }
 
@@ -399,8 +449,30 @@ export function toView(
     tags_json: _g,
     raw_json: _r,
     fts: _f,
+    seen_sources_json: _ss,
+    keywords_json: _kw,
+    majors_json: _mj,
     ...rest
   } = row as Internship & { fts?: unknown };
+
+  const keywords = listingKeywords(row, skills);
+  const majors = jsonArray(row.majors_json);
+  const fit = computeFit(candidate, profile);
+  const seen = jsonArray(row.seen_sources_json);
+  const match = computeMatch(keywords, profile);
+  const eligibility = computeEligibility(
+    {
+      class_years: classYears,
+      degrees,
+      grad_year_min: row.grad_year_min ?? null,
+      grad_year_max: row.grad_year_max ?? null,
+      underclass_ok: row.underclass_ok ?? null,
+      majors,
+      year: row.year,
+    },
+    profile,
+    fit?.blockers ?? [],
+  );
 
   return {
     ...rest,
@@ -414,8 +486,25 @@ export function toView(
     applied: !!app,
     application_id: app?.id ?? null,
     application_status: (app?.status as InternshipView['application_status']) ?? null,
-    fit: computeFit(candidate, profile),
+    fit,
+    seen_sources: seen.length ? [row.source, ...seen.filter((x) => x !== row.source)] : [row.source],
+    keywords: keywords.map((k) => ({ term: k.term, count: k.count, category: k.category })),
+    majors,
+    match,
+    eligibility,
+    recommend: computeRecommendation(row, match, eligibility, profile),
   };
+}
+
+/**
+ * Stored ATS keywords, or, for rows written before keyword extraction
+ * existed, the skill tags as a stand-in until the next sync or reclassify
+ * fills them in.
+ */
+function listingKeywords(row: Internship, skills: string[]): Keyword[] {
+  const stored = unpackKeywords(row.keywords_json);
+  if (stored.length) return stored;
+  return skills.map((term, i) => ({ term, count: 1, weight: Math.max(1, skills.length - i), category: keywordCategory(term) }));
 }
 
 /**

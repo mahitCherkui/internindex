@@ -280,3 +280,128 @@ export async function fetchSmartRecruiters(token: string, label: string): Promis
     } satisfies RawListing;
   });
 }
+
+// ------------------------------------------------------------------ Recruitee
+
+interface RecruiteeOffer {
+  id?: number;
+  slug?: string;
+  title?: string;
+  description?: string;
+  requirements?: string;
+  location?: string;
+  city?: string;
+  country?: string;
+  remote?: boolean;
+  hybrid?: boolean;
+  careers_url?: string;
+  careers_apply_url?: string;
+  published_at?: string;
+  updated_at?: string;
+  close_at?: string | null;
+  department?: string;
+  employment_type_code?: string;
+  status?: string;
+  salary?: { min?: string | number | null; max?: string | number | null; currency?: string; period?: string };
+}
+
+const RECRUITEE_PERIOD: Record<string, string> = {
+  year: 'year',
+  annual: 'year',
+  month: 'month',
+  hour: 'hour',
+};
+
+/**
+ * Recruitee's public careers-site API, the default ATS for a large share of
+ * European startups. `GET https://{company}.recruitee.com/api/offers/` lists
+ * every published offer with its full description and requirements.
+ */
+export async function fetchRecruitee(token: string, label: string): Promise<RawListing[]> {
+  const data = await getJson<{ offers?: RecruiteeOffer[] }>(
+    `https://${encodeURIComponent(token)}.recruitee.com/api/offers/`,
+    { timeoutMs: 30_000 },
+  );
+  const offers = data?.offers ?? [];
+  const money = (v: string | number | null | undefined) => {
+    const n = typeof v === 'string' ? Number.parseFloat(v) : v;
+    return n != null && Number.isFinite(n) && n > 0 ? n : null;
+  };
+
+  return offers
+    .filter((o) => o.id && o.title && (o.status == null || o.status === 'published'))
+    .map((offer): RawListing => {
+      const min = money(offer.salary?.min);
+      const max = money(offer.salary?.max);
+      return {
+        source: `recruitee:${token}`,
+        sourceKind: 'ats',
+        sourceId: String(offer.id),
+        company: label,
+        title: offer.title ?? '',
+        applyUrl: offer.careers_apply_url || offer.careers_url || `https://${token}.recruitee.com/o/${offer.slug}`,
+        description: [offer.description, offer.requirements].filter(Boolean).join('\n\n') || null,
+        locations: [offer.location || [offer.city, offer.country].filter(Boolean).join(', ')].filter(Boolean),
+        remoteFlag: offer.remote ?? null,
+        terms: [],
+        datePosted: secs(offer.published_at),
+        dateUpdated: secs(offer.updated_at) ?? secs(offer.published_at),
+        deadline: secs(offer.close_at ?? null),
+        categoryHint: offer.department ?? '',
+        salaryMin: min,
+        salaryMax: max,
+        salaryPeriod: min || max ? RECRUITEE_PERIOD[offer.salary?.period ?? ''] ?? null : null,
+        salaryCurrency: offer.salary?.currency ?? null,
+        activeFlag: true,
+        tags: offer.employment_type_code ? [`employment:${offer.employment_type_code}`] : [],
+      };
+    });
+}
+
+// ------------------------------------------------------------------------ Gem
+
+interface GemPost {
+  id?: string;
+  title?: string;
+  absolute_url?: string;
+  content?: string;
+  content_plain?: string;
+  first_published_at?: string;
+  updated_at?: string;
+  employment_type?: string;
+  location?: { name?: string };
+  location_type?: string;
+  offices?: { location?: { name?: string } }[];
+  departments?: { name?: string }[];
+}
+
+/**
+ * Gem's hosted job boards (jobs.gem.com/{board}), used by a growing number of
+ * startups. The public API mirrors Greenhouse's shape and includes the full
+ * description and employment type.
+ */
+export async function fetchGem(token: string, label: string): Promise<RawListing[]> {
+  const data = await getJson<GemPost[]>(`https://api.gem.com/job_board/v0/${encodeURIComponent(token)}/job_posts/`, {
+    timeoutMs: 30_000,
+  });
+  if (!Array.isArray(data)) return [];
+  return data
+    .filter((p) => p.id && p.title && p.absolute_url)
+    .map((post): RawListing => ({
+      source: `gem:${token}`,
+      sourceKind: 'ats',
+      sourceId: post.id!,
+      company: label,
+      title: post.title!,
+      applyUrl: post.absolute_url!,
+      description: post.content ?? post.content_plain ?? null,
+      locations: [post.location?.name, ...(post.offices ?? []).map((o) => o.location?.name)].filter(Boolean) as string[],
+      remoteFlag: post.location_type ? /remote/i.test(post.location_type) : null,
+      terms: [],
+      datePosted: secs(post.first_published_at),
+      dateUpdated: secs(post.updated_at),
+      categoryHint: (post.departments ?? []).map((d) => d.name).filter(Boolean).join(', '),
+      activeFlag: true,
+      tags: post.employment_type ? [`employment:${post.employment_type}`] : [],
+    }));
+}

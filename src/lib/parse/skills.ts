@@ -3,7 +3,7 @@
  * extracted tags clean and makes them usable as real filter facets, which
  * a generic keyword extractor would not be.
  */
-const SKILLS: { name: string; re: RegExp }[] = [
+export const SKILLS: { name: string; re: RegExp }[] = [
   // Languages
   { name: 'Python', re: /\bpython\b/i },
   { name: 'Java', re: /\bjava\b(?!script)/i },
@@ -70,6 +70,15 @@ const SKILLS: { name: string; re: RegExp }[] = [
   { name: 'NLP', re: /\bnlp\b|\bnatural\s+language\s+processing\b/i },
   { name: 'Computer Vision', re: /\bcomputer\s+vision\b|\bopencv\b/i },
   { name: 'LLMs', re: /\bllm(?:s)?\b|\blarge\s+language\s+model/i },
+  { name: 'Jupyter', re: /\bjupyter\b/i },
+  { name: 'XGBoost', re: /\bxgboost\b|\blightgbm\b/i },
+  { name: 'Hugging Face', re: /\bhugging\s*face\b|\btransformers\s+library\b/i },
+  { name: 'JAX', re: /\bjax\b/i },
+  { name: 'CUDA', re: /\bcuda\b/i },
+  { name: 'BigQuery', re: /\bbigquery\b/i },
+  { name: 'kdb+/q', re: /\bkdb\+?|\bq\/kdb\b/i },
+  { name: 'OCaml', re: /\bocaml\b/i },
+  { name: 'Haskell', re: /\bhaskell\b/i },
 
   // Infra
   { name: 'AWS', re: /\baws\b|\bamazon\s+web\s+services\b/i },

@@ -1,4 +1,5 @@
 import { handler, ok } from '@/lib/api';
+import { isDemo } from '@/lib/demo';
 import { getUserId } from '@/lib/auth';
 import { computeFacets, parseSearchParams } from '@/lib/query';
 import { getProfile } from '@/lib/repo';
@@ -11,6 +12,7 @@ export const dynamic = 'force-dynamic';
  * this instead of my current choice".
  */
 export const GET = handler(async (request: Request) => {
+  if (isDemo()) return ok(await (await import('@/lib/demo')).demoFacets());
   const url = new URL(request.url);
   const query = parseSearchParams(url.searchParams);
   const userId = await getUserId();

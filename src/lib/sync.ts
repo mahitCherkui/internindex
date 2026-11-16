@@ -1,27 +1,9 @@
-import { exec, nowSec, one, q } from './db';
+import { exec, jsonArray, nowSec, one, q } from './db';
 import { normalize, type NormalizedListing, type RawListing } from './parse';
-import { fetchAshby, fetchGreenhouse, fetchLever, fetchSmartRecruiters } from './sources/ats';
-import { fetchWorkable } from './sources/workable';
-import {
-  fetchAmazon,
-  fetchBamboo,
-  fetchBreezy,
-  fetchPersonio,
-  fetchRippling,
-} from './sources/bigtech';
-import { fetchEightfold } from './sources/eightfold';
-import { fetchOracle } from './sources/oracle';
+import { fetchSourceRaw } from './sources/registry';
+import { NO_FETCH_HOSTS } from './no-fetch';
+import { enrichFromUrl } from './sources/enrich';
 import { fetchPhenom } from './sources/phenom';
-import { fetchWorkday } from './sources/workday';
-import { fetchJibe } from './sources/jibe';
-import { fetchOrise, fetchUsaJobs } from './sources/research';
-import {
-  fetchArbeitnow,
-  fetchGithubList,
-  fetchJobicy,
-  fetchMuse,
-  fetchRemoteOk,
-} from './sources/feeds';
 import { isPartial } from './sources/partial';
 import { employerKey, probeMuseEmployers } from './sources/muse-discovery';
 import { checkLink, mapPool } from './sources/http';
@@ -105,6 +87,8 @@ export interface SyncOptions {
    * budget (its full sweep takes minutes) and no employer page probes.
    */
   light?: boolean;
+  /** Postings without a description to enrich from their apply page this run. */
+  enrich?: number;
   onProgress?: (message: string) => void;
 }
 
@@ -118,6 +102,14 @@ export async function ensureSeedSources(): Promise<void> {
      FROM unnest(?::text[], ?::text[], ?::text[]) AS s(kind, token, label)
      ON CONFLICT (kind, token) DO NOTHING`,
     [now, all.map((s) => s.kind), all.map((s) => s.token), all.map((s) => s.label)],
+  );
+  // Feed labels name the cycle they read ("Summer 2027"), so keep them current
+  // when a feed rolls over to a new year's list under the same token.
+  await exec(
+    `UPDATE source_configs sc SET label = s.label
+     FROM unnest(?::text[], ?::text[], ?::text[]) AS s(kind, token, label)
+     WHERE sc.kind = s.kind AND sc.token = s.token AND sc.label <> s.label`,
+    [SEED_FEEDS.map((s) => s.kind), SEED_FEEDS.map((s) => s.token), SEED_FEEDS.map((s) => s.label)],
   );
 }
 
@@ -178,61 +170,16 @@ const BOARD_KINDS = new Set([
   'breezy',
   'personio',
   'jibe',
+  'recruitee',
+  'gem',
 ]);
 
 function isBoardKind(kind: string): boolean {
   return BOARD_KINDS.has(kind);
 }
 
-async function fetchSource(row: SourceRow, opts: SyncOptions = {}): Promise<RawListing[]> {
-  switch (row.kind) {
-    case 'greenhouse':
-      return fetchGreenhouse(row.token, row.label);
-    case 'lever':
-      return fetchLever(row.token, row.label);
-    case 'ashby':
-      return fetchAshby(row.token, row.label);
-    case 'smartrecruiters':
-      return fetchSmartRecruiters(row.token, row.label);
-    case 'workable':
-      return fetchWorkable(row.token, row.label);
-    case 'workday':
-      return fetchWorkday(row.token, row.label);
-    case 'oracle':
-      return fetchOracle(row.token, row.label);
-    case 'phenom':
-      return fetchPhenom(row.token, row.label);
-    case 'eightfold':
-      return fetchEightfold(row.token, row.label);
-    case 'rippling':
-      return fetchRippling(row.token, row.label);
-    case 'bamboohr':
-      return fetchBamboo(row.token, row.label);
-    case 'breezy':
-      return fetchBreezy(row.token, row.label);
-    case 'jibe':
-      return fetchJibe(row.token, row.label);
-    case 'personio':
-      return fetchPersonio(row.token, row.label);
-    case 'amazon':
-      return fetchAmazon();
-    case 'muse':
-      return fetchMuse(opts.light ? { budget: 100 } : {});
-    case 'orise':
-      return fetchOrise();
-    case 'usajobs':
-      return fetchUsaJobs();
-    case 'jobicy':
-      return fetchJobicy();
-    case 'github':
-      return fetchGithubList(row.token);
-    case 'remoteok':
-      return fetchRemoteOk();
-    case 'arbeitnow':
-      return fetchArbeitnow();
-    default:
-      throw new Error(`Unknown source kind: ${row.kind}`);
-  }
+function fetchSource(row: SourceRow, opts: SyncOptions = {}): Promise<RawListing[]> {
+  return fetchSourceRaw(row.kind, row.token, row.label, { light: opts.light });
 }
 
 /**
@@ -282,7 +229,7 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
         // they don't own; an ATS reporting its own slug adds nothing.
         seenUrls.push({
           url: item.applyUrl,
-          company: row.kind === 'github' ? item.company : undefined,
+          company: row.kind === 'github' || row.kind === 'hn' ? item.company : undefined,
         });
         const normalized = normalize(item);
         if (normalized) listings.push(normalized);
@@ -352,6 +299,12 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
   const healthySources = [...bySource.keys()].filter((source) => !partialSources.has(source));
   if (partialSources.size) log(`Skipping delisting for ${partialSources.size} partially read source(s).`);
   const closed = await reconcileOpenness(bySource, healthySources);
+
+  // ---- Fill in descriptions the feeds didn't carry. ----
+  if (opts.enrich && opts.enrich > 0) {
+    const e = await enrichPending(opts.enrich, { concurrency: 8 });
+    log(`Enriched ${e.enriched} of ${e.tried} postings with their full description (${Object.entries(e.via).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}).`);
+  }
 
   // ---- Lifecycle sweep + dedupe. ----
   const expired = await sweepLifecycle();
@@ -443,6 +396,8 @@ async function discoverFromMuse(postings: { company: string; applyUrl: string }[
 
 /** Singleton feeds emit a bare kind as their source string; boards emit "kind:token". */
 const SINGLETON_KINDS = new Set([
+  'hn',
+  'janestreet',
   'remoteok',
   'arbeitnow',
   'jobicy',
@@ -483,6 +438,8 @@ const UPSERT_COLUMNS: [name: string, pgType: string][] = [
   ['status', 'text'], ['is_open', 'smallint'], ['first_seen_at', 'bigint'],
   ['last_seen_at', 'bigint'], ['date_posted', 'bigint'], ['date_updated', 'bigint'],
   ['dedupe_key', 'text'], ['quality', 'double precision'],
+  ['keywords_json', 'text'], ['grad_year_min', 'smallint'], ['grad_year_max', 'smallint'],
+  ['majors_json', 'text'], ['underclass_ok', 'smallint'],
 ];
 
 /** Columns whose new value should only overwrite when the new value is present. */
@@ -534,6 +491,22 @@ export async function upsertListings(listings: NormalizedListing[]): Promise<Ups
   for (const listing of listings) byId.set(listing.id, listing);
   const unique = [...byId.values()];
 
+  // A posting with no date of its own that newly appears on a feed we've read
+  // before was really just posted, so it gets this moment as its date. On a
+  // feed's first read everything is a backlog, and stays undated.
+  const undatedSources = [...new Set(unique.filter((l) => l.date_posted == null).map((l) => l.source))];
+  const knownSources = new Set(
+    undatedSources.length
+      ? (
+          await q<{ source: string }>(
+            `SELECT s.source FROM unnest(?::text[]) AS s(source)
+             WHERE EXISTS (SELECT 1 FROM internships i WHERE i.source = s.source AND i.first_seen_at < ?)`,
+            [undatedSources, now - 3600],
+          )
+        ).map((r) => r.source)
+      : [],
+  );
+
   for (let i = 0; i < unique.length; i += 500) {
     const chunk = unique.slice(i, i + 500);
     const ids = chunk.map((l) => l.id);
@@ -556,7 +529,11 @@ export async function upsertListings(listings: NormalizedListing[]): Promise<Ups
         continue;
       }
       if (prior === 0 && listing.active) reopened++;
-      batch.push(toParams(listing, now));
+      const params = toParams(listing, now);
+      if (prior === undefined && listing.date_posted == null && knownSources.has(listing.source)) {
+        params.date_posted = now;
+      }
+      batch.push(params);
     }
     if (batch.length === 0) continue;
 
@@ -629,6 +606,11 @@ function toParams(l: NormalizedListing, now: number): Record<string, unknown> {
     date_updated: l.date_updated,
     dedupe_key: l.dedupe_key,
     quality: l.quality,
+    keywords_json: JSON.stringify(l.keywords),
+    grad_year_min: l.grad_year_min,
+    grad_year_max: l.grad_year_max,
+    majors_json: JSON.stringify(l.majors),
+    underclass_ok: l.underclass_ok,
   };
 }
 
@@ -674,7 +656,7 @@ export async function sweepLifecycle(): Promise<number> {
 
   count += await exec(
     `UPDATE internships SET is_open = 0, status = 'closed', close_reason = 'stale', closed_at = ?
-     WHERE is_open = 1 AND last_seen_at < ?`,
+     WHERE is_open = 1 AND last_seen_at < ? AND source <> 'import'`,
     [now, now - STALE_UNSEEN_DAYS * DAY],
   );
 
@@ -724,27 +706,60 @@ async function pruneClosed(now: number): Promise<number> {
   );
 }
 
+interface DupeRow {
+  id: string;
+  dedupe_key: string;
+  source: string;
+  source_kind: string;
+  quality: number;
+  date_posted: number | null;
+  first_seen_at: number;
+  has_desc: number;
+  season: string;
+  year: number | null;
+  city: string | null;
+  country: string | null;
+  is_remote: number;
+  seen_sources_json: string;
+  duplicate_of: string | null;
+  company_url: string | null;
+}
+
+/**
+ * Two postings with the same company and title are the same role only when
+ * their terms and places agree. A missing value on either side is treated as
+ * agreement, because aggregators routinely omit what the ATS states.
+ */
+export function sameRole(
+  a: Pick<DupeRow, 'season' | 'year' | 'city' | 'country' | 'is_remote'>,
+  b: Pick<DupeRow, 'season' | 'year' | 'city' | 'country' | 'is_remote'>,
+): boolean {
+  const known = (s: string) => s && s !== 'Unknown';
+  if (known(a.season) && known(b.season) && a.season !== b.season) return false;
+  if (a.year != null && b.year != null && a.year !== b.year) return false;
+  if (a.is_remote && b.is_remote) return true;
+  if (a.city && b.city) return a.city.toLowerCase() === b.city.toLowerCase();
+  if (a.country && b.country && a.country !== b.country) return false;
+  return true;
+}
+
 /**
  * Collapse the same role found on multiple sources down to one canonical row.
- * Preference order: a company's own ATS board, then metadata completeness,
- * then the most recently posted copy.
+ *
+ * Postings are grouped by normalized company + title (the dedupe key) and
+ * then clustered by compatible term and location. The canonical row is the
+ * company's own ATS copy when there is one (its apply link is the real
+ * application page), then the most complete, then the most recently posted.
+ * It inherits the earliest first_seen_at in its cluster, so "new today" means
+ * new to every source, and records every source the role was seen on.
  */
 export async function markDuplicates(): Promise<number> {
   // Only rows whose duplicate link actually changes are written. Every write
-  // re-indexes the whole row for full-text search (the index is built from
-  // the title and full description), so the old "clear every open row, then
-  // re-mark" approach rewrote ~36,000 rows a run, ran past the statement
-  // timeout and failed the scheduled sync, and left as many dead tuples
-  // behind on a database already near its size cap.
-  const rows = await q<{
-    id: string;
-    dedupe_key: string;
-    source_kind: string;
-    quality: number;
-    date_posted: number | null;
-    has_desc: number;
-  }>(
-    `SELECT id, dedupe_key, source_kind, quality, date_posted,
+  // re-indexes the whole row for full-text search, so rewriting every open
+  // row each run ran past the statement timeout and failed the sync.
+  const rows = await q<DupeRow>(
+    `SELECT id, dedupe_key, source, source_kind, quality, date_posted, first_seen_at,
+            season, year, city, country, is_remote, seen_sources_json, duplicate_of, company_url,
             CASE WHEN description IS NOT NULL THEN 1 ELSE 0 END AS has_desc
      FROM internships
      WHERE is_open = 1 AND dedupe_key <> ''
@@ -755,7 +770,7 @@ export async function markDuplicates(): Promise<number> {
        )`,
   );
 
-  const groups = new Map<string, typeof rows>();
+  const groups = new Map<string, DupeRow[]>();
   for (const row of rows) {
     const bucket = groups.get(row.dedupe_key) ?? [];
     bucket.push(row);
@@ -764,9 +779,9 @@ export async function markDuplicates(): Promise<number> {
 
   const rank = (kind: string) => (kind === 'ats' ? 2 : kind === 'aggregator' ? 1 : 0);
   const pairs: { id: string; winner: string }[] = [];
+  const winners: { id: string; first_seen_at: number; seen_sources_json: string; company_url: string | null }[] = [];
 
   for (const group of groups.values()) {
-    if (group.length < 2) continue;
     group.sort(
       (a, b) =>
         rank(b.source_kind) - rank(a.source_kind) ||
@@ -775,8 +790,34 @@ export async function markDuplicates(): Promise<number> {
         (b.date_posted ?? 0) - (a.date_posted ?? 0) ||
         a.id.localeCompare(b.id),
     );
-    const winner = group[0];
-    for (const loser of group.slice(1)) pairs.push({ id: loser.id, winner: winner.id });
+
+    // Greedy clustering: each row joins the first cluster whose canonical row
+    // it is compatible with, or starts its own.
+    const clusters: DupeRow[][] = [];
+    for (const row of group) {
+      const home = clusters.find((cluster) => sameRole(cluster[0], row));
+      if (home) home.push(row);
+      else clusters.push([row]);
+    }
+
+    for (const cluster of clusters) {
+      if (cluster.length < 2) continue;
+      const [winner, ...losers] = cluster;
+      for (const loser of losers) pairs.push({ id: loser.id, winner: winner.id });
+
+      const sources = new Set<string>();
+      for (const member of cluster) {
+        sources.add(member.source);
+        for (const s of jsonArray(member.seen_sources_json)) sources.add(s);
+      }
+      const merged = JSON.stringify([...sources].sort());
+      const earliest = Math.min(...cluster.map((m) => m.first_seen_at));
+      // The ATS copy rarely knows the employer's homepage; an aggregator copy often does.
+      const homepage = winner.company_url ?? cluster.find((m) => m.company_url && !/simplify\.jobs/.test(m.company_url))?.company_url ?? null;
+      if (merged !== winner.seen_sources_json || earliest !== winner.first_seen_at || homepage !== winner.company_url) {
+        winners.push({ id: winner.id, first_seen_at: earliest, seen_sources_json: merged, company_url: homepage });
+      }
+    }
   }
 
   // Release open rows that are no longer anyone's duplicate, e.g. because the
@@ -793,6 +834,17 @@ export async function markDuplicates(): Promise<number> {
       `UPDATE internships i SET duplicate_of = m.winner
        FROM jsonb_to_recordset(?::jsonb) AS m(id text, winner text)
        WHERE i.id = m.id AND i.duplicate_of IS DISTINCT FROM m.winner`,
+      [JSON.stringify(chunk)],
+    );
+  }
+
+  for (let i = 0; i < winners.length; i += 2000) {
+    const chunk = winners.slice(i, i + 2000);
+    await exec(
+      `UPDATE internships i SET first_seen_at = m.first_seen_at, seen_sources_json = m.seen_sources_json,
+              company_url = COALESCE(i.company_url, m.company_url)
+       FROM jsonb_to_recordset(?::jsonb) AS m(id text, first_seen_at bigint, seen_sources_json text, company_url text)
+       WHERE i.id = m.id`,
       [JSON.stringify(chunk)],
     );
   }
@@ -863,13 +915,23 @@ export async function verifyLinks(
 ): Promise<{ checked: number; closed: number; alive: number; errors: number }> {
   const now = nowSec();
 
-  const rows = await q<{ id: string; apply_url: string }>(
+  const candidates = await q<{ id: string; apply_url: string }>(
     `SELECT id, apply_url FROM internships
      WHERE is_open = 1 AND duplicate_of IS NULL
      ORDER BY COALESCE(link_checked_at, 0) ASC, last_seen_at DESC
      LIMIT ?`,
     [limit],
   );
+  // Never request sites whose terms forbid automated access (imported
+  // LinkedIn/Handshake/Indeed links). They answer bots with 999/403 anyway,
+  // which says nothing about the posting.
+  const rows = candidates.filter((row) => {
+    try {
+      return !NO_FETCH_HOSTS.test(new URL(row.apply_url).hostname);
+    } catch {
+      return false;
+    }
+  });
 
   let closed = 0;
   let alive = 0;
@@ -881,7 +943,7 @@ export async function verifyLinks(
       errors++;
       return; // couldn't reach it; leave the listing alone
     }
-    if (result.closed || result.status >= 400) {
+    if (result.closed) {
       await exec(
         `UPDATE internships SET is_open = 0, status = 'closed', close_reason = 'dead-link',
             closed_at = ?, link_status = ?, link_checked_at = ? WHERE id = ?`,
@@ -900,4 +962,87 @@ export async function verifyLinks(
 
   opts.onProgress?.(`Checked ${rows.length} links: ${alive} alive, ${closed} closed, ${errors} unreachable`);
   return { checked: rows.length, closed, alive, errors };
+}
+
+/** How long to wait before retrying a posting whose page yielded nothing. */
+const ENRICH_RETRY_DAYS = 7;
+
+/**
+ * Fetch the full posting behind links that arrived without a description
+ * (the community lists, Hacker News, imports), newest first, and re-classify
+ * them with it. That is what gives a GitHub-list posting its requirements,
+ * keywords, pay, deadline and eligibility. Each link is tried at most once
+ * a week; ATS links go through the ATS's own API, everything else through
+ * the page's schema.org JobPosting data, and only where robots.txt allows.
+ */
+export async function enrichPending(
+  limit: number,
+  opts: { concurrency?: number } = {},
+): Promise<{ tried: number; enriched: number; via: Record<string, number> }> {
+  const now = nowSec();
+  const rows = await q<EnrichableRow>(
+    `SELECT id, source, source_kind, source_id, company, company_url, title, apply_url, locations_json, terms_json,
+            is_remote, date_posted, deadline, salary_min, salary_max, salary_period, salary_currency, tags_json
+     FROM internships
+     WHERE is_open = 1 AND duplicate_of IS NULL
+       AND (description IS NULL OR length(description) < 200)
+       AND (enriched_at IS NULL OR enriched_at < ?)
+     ORDER BY first_seen_at DESC
+     LIMIT ?`,
+    [now - ENRICH_RETRY_DAYS * DAY, limit],
+  );
+
+  const updated: NormalizedListing[] = [];
+  const via: Record<string, number> = {};
+  await mapPool(rows, opts.concurrency ?? 8, async (row) => {
+    const result = await enrichRow(row);
+    if (!result) return;
+    via[result.via] = (via[result.via] ?? 0) + 1;
+    updated.push(result.listing);
+  });
+
+  if (updated.length) await upsertListings(updated);
+  if (rows.length) {
+    await exec('UPDATE internships SET enriched_at = ? WHERE id = ANY(?)', [now, rows.map((r) => r.id)]);
+  }
+  return { tried: rows.length, enriched: updated.length, via };
+}
+
+export interface EnrichableRow {
+  id: string; source: string; source_kind: string; source_id: string; company: string; company_url: string | null;
+  title: string; apply_url: string; locations_json: string; terms_json: string; is_remote: number;
+  date_posted: number | null; deadline: number | null; salary_min: number | null; salary_max: number | null;
+  salary_period: string | null; salary_currency: string | null; tags_json: string;
+}
+
+/** Fetch one posting's full text and re-normalize it; null when nothing usable came back. */
+export async function enrichRow(row: EnrichableRow): Promise<{ listing: NormalizedListing; via: string } | null> {
+  const e = await enrichFromUrl(row.apply_url);
+  if (!e?.description || e.description.length < 120) return null;
+  const hasPay = row.salary_min != null;
+  const listing = normalize({
+    source: row.source,
+    sourceKind: row.source_kind as RawListing['sourceKind'],
+    sourceId: row.source_id,
+    company: row.company,
+    companyUrl: row.company_url ?? e.companyUrl ?? null,
+    title: row.title,
+    applyUrl: row.apply_url,
+    description: e.description,
+    locations: e.locations?.length ? e.locations : jsonArray(row.locations_json),
+    remoteFlag: e.remote ?? (row.is_remote ? true : null),
+    terms: jsonArray(row.terms_json),
+    datePosted: row.date_posted ?? e.datePosted ?? null,
+    dateUpdated: e.datePosted ?? row.date_posted ?? null,
+    deadline: e.deadline ?? row.deadline,
+    salaryMin: hasPay ? row.salary_min : e.salaryMin ?? null,
+    salaryMax: hasPay ? row.salary_max : e.salaryMax ?? null,
+    salaryPeriod: hasPay ? row.salary_period : e.salaryPeriod ?? null,
+    salaryCurrency: hasPay ? row.salary_currency : e.salaryCurrency ?? null,
+    activeFlag: true,
+    // It was already accepted as an internship; the description shouldn't drop it.
+    assumeInternship: true,
+    tags: [...jsonArray(row.tags_json), `enriched:${e.via}`],
+  });
+  return listing && listing.id === row.id ? { listing, via: e.via } : null;
 }

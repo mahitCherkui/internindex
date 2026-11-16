@@ -9,6 +9,7 @@
  */
 
 import type { BoardKind } from '../types';
+import { GITHUB_FEEDS } from './feeds';
 import { encodeEightfoldToken, eightfoldBoardFromUrl } from './eightfold';
 import { encodeOracleToken, oracleBoardFromUrl } from './oracle';
 import { phenomHostFromUrl } from './phenom';
@@ -52,6 +53,10 @@ const GREENHOUSE = [
   'talkspace', 'curative', 'honor', 'elationhealth', 'oshihealth',
   'charliehealth', 'trustedhealth', 'cloverhealth', 'iterativehealth',
   'akidolabs', 'welbehealth', 'resilience',
+  // Quant and trading firms beyond the original wave, plus fintech. Each was
+  // confirmed to answer with a live board in November 2026.
+  'fiveringsllc', 'point72', 'aqr', 'bridgewater89', 'schonfeld', 'chicagotrading',
+  'gemini', 'ripple', 'clearstreet', 'block', 'alpaca', 'betterment', 'monzo',
 ] as const;
 
 const LEVER = [
@@ -59,6 +64,8 @@ const LEVER = [
   // Expansion wave.
   'kraken123', 'highspot', 'outreach', 'entrata', 'matchgroup', 'mashgin',
   'plaid', 'saronic',
+  // Trading and fintech.
+  'belvederetrading', 'wealthfront', 'anchorage',
   // Health tech.
   'nomihealth',
 ] as const;
@@ -76,6 +83,8 @@ const ASHBY = [
   // Clinical AI and digital health.
   'openevidence', 'nabla', 'counsel', 'superpower', 'tennr', 'anterior',
   'clarium', 'rula', 'slingshotai', 'neko-health', 'cradlebio',
+  // Quant and fintech on Ashby.
+  'voleon', 'nubank', 'paxos',
 ] as const;
 
 const SMARTRECRUITERS = [
@@ -433,6 +442,13 @@ const JIBE: [token: string, label: string][] = [
   ['careers.ulta.com', 'Ulta Beauty'],
   ['careers.principal.com', 'Principal Financial Group'],
   ['jobs.booking.com', 'Booking.com'],
+  // Susquehanna (SIG) recruits every intern cohort through its Jibe site.
+  ['careers.sig.com', 'Susquehanna International Group (SIG)'],
+];
+
+/** Recruitee careers sites, by subdomain. */
+const RECRUITEE: [token: string, label: string][] = [
+  ['bunq', 'bunq'],
 ];
 
 /**
@@ -466,6 +482,7 @@ const PAIRED: [kind: BoardKind, boards: [token: string, label: string][]][] = [
   ['bamboohr', BAMBOOHR],
   ['breezy', BREEZY],
   ['jibe', JIBE],
+  ['recruitee', RECRUITEE],
 ];
 
 export const SEED_BOARDS: SeedBoard[] = [
@@ -479,9 +496,13 @@ export const SEED_BOARDS: SeedBoard[] = [
 
 /** Singleton feeds that aren't per-company. */
 export const SEED_FEEDS: { kind: string; token: string; label: string }[] = [
-  { kind: 'github', token: 'simplify-summer', label: 'GitHub · SimplifyJobs Summer 2026' },
-  { kind: 'github', token: 'vansh-summer', label: 'GitHub · vanshb03 Summer 2026' },
-  { kind: 'github', token: 'simplify-newgrad', label: 'GitHub · SimplifyJobs New Grad' },
+  ...Object.entries(GITHUB_FEEDS).map(([token, feed]) => ({
+    kind: 'github',
+    token,
+    label: `GitHub · ${feed.label}`,
+  })),
+  { kind: 'hn', token: '-', label: "Hacker News · Who's Hiring (internships)" },
+  { kind: 'janestreet', token: '-', label: 'Jane Street' },
   { kind: 'amazon', token: '-', label: 'Amazon' },
   { kind: 'muse', token: '-', label: 'The Muse (every internship category)' },
   { kind: 'orise', token: '-', label: 'ORISE · federal research participation' },
@@ -585,6 +606,17 @@ export function boardFromUrl(url: string): SeedBoard | null {
     const token = host.split('.')[0];
     return /^[a-z0-9][a-z0-9-]{1,40}$/.test(token)
       ? { kind: 'breezy', token, label: label(token) }
+      : null;
+  }
+  if (host === 'jobs.gem.com') {
+    // jobs.gem.com/<board>/<post-id>
+    const token = take(0);
+    return token ? { kind: 'gem', token, label: label(token) } : null;
+  }
+  if (host.endsWith('.recruitee.com')) {
+    const token = host.split('.')[0];
+    return /^[a-z0-9][a-z0-9-]{1,40}$/.test(token) && token !== 'www' && token !== 'api'
+      ? { kind: 'recruitee', token, label: label(token) }
       : null;
   }
   if (host.endsWith('.jobs.personio.de') || host.endsWith('.jobs.personio.com')) {

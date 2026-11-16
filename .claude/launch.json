@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "demo",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["INTERNINDEX_DEMO=1", "NEXT_DIST_DIR=.next-preview", "npm", "run", "dev", "--", "-p", "3100"],
+      "port": 3100
+    }
+  ]
+}

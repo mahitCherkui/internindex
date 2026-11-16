@@ -171,6 +171,12 @@ const RULES: Rule[] = [
     strong: [/\bproduct\s+manage/i, /\bproduct\s+(?:owner|intern)\b/i, /\bAPM\b/, /\btechnical\s+program\s+manage/i, /\bprogram\s+manage/i, /\bproject\s+manage/i, /\bscrum\b/i],
   },
   {
+    family: 'ux-research',
+    strong: [/\bUX\s+research/i, /\buser\s+research(?:er)?\b/i, /\bdesign\s+research(?:er)?\b/i, /\busability\s+(?:research|test)/i, /\bmixed[-\s]methods\s+research/i],
+    titleWeight: 8,
+    needsTitle: true,
+  },
+  {
     family: 'product-design',
     strong: [/\bUX\b/i, /\bUI\/UX\b/i, /\buser\s+(?:experience|research|interface)\b/i, /\bproduct\s+design/i, /\binteraction\s+design/i, /\bdesign\s+intern/i],
     weak: [/\bfigma|sketch|prototyp/i],
@@ -182,6 +188,13 @@ const RULES: Rule[] = [
   {
     family: 'quant-trading',
     strong: [/\bquantitative\s+trad/i, /\btrading\s+intern/i, /\bquant\s+trad/i, /\btrader\b/i, /\bmarket\s+mak/i, /\balgorithmic\s+trading\b/i],
+  },
+  {
+    // Ahead of quant research, whose "quantitative develop" pattern would
+    // otherwise claim every quant developer title.
+    family: 'quant-dev',
+    strong: [/\bquant(?:itative)?\s+(?:developer|development|dev|engineer(?:ing)?|software)\b/i, /\btrading\s+(?:systems|infrastructure|platform)\s+(?:engineer|developer)/i, /\blow[-\s]latency\b/i],
+    titleWeight: 8,
   },
   {
     family: 'quant-research',
@@ -364,6 +377,8 @@ const FAMILY_TO_FIELD: Record<string, Field> = {
   'it-support': 'IT & Systems',
   'product-management': 'Product Management',
   'product-design': 'Design & UX',
+  'ux-research': 'Design & UX',
+  'quant-dev': 'Quantitative Finance',
   'graphic-design': 'Design & UX',
   'quant-trading': 'Quantitative Finance',
   'quant-research': 'Quantitative Finance',
@@ -407,7 +422,9 @@ const FAMILY_TO_FIELD: Record<string, Field> = {
 const CATEGORY_HINTS: { re: RegExp; field: Field; family: RoleFamily }[] = [
   { re: /^software\s*engineer/i, field: 'Software Engineering', family: 'swe-general' },
   { re: /business\s*(?:analy|intelligence)/i, field: 'Business Analytics', family: 'business-analytics' },
-  { re: /AI|ML|Data/i, field: 'Data & Analytics', family: 'data-analyst' },
+  { re: /\bAI\b|\bML\b|machine\s*learning/i, field: 'AI & Machine Learning', family: 'machine-learning' },
+  { re: /data\s*sci/i, field: 'Data & Analytics', family: 'data-science' },
+  { re: /data/i, field: 'Data & Analytics', family: 'data-analyst' },
   { re: /quant/i, field: 'Quantitative Finance', family: 'quant-research' },
   { re: /hardware/i, field: 'Hardware & Electrical', family: 'electrical' },
   { re: /product/i, field: 'Product Management', family: 'product-management' },
@@ -428,7 +445,7 @@ const CATEGORY_HINTS: { re: RegExp; field: Field; family: RoleFamily }[] = [
  * Bump when the taxonomy or rules change in a way existing rows should pick
  * up. `npm run reclassify` re-runs the catalog once per version.
  */
-export const CLASSIFIER_VERSION = '2026-11-business-analytics';
+export const CLASSIFIER_VERSION = '2026-11-tech-roles';
 
 export interface FieldResult {
   field: Field;

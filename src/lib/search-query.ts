@@ -39,6 +39,12 @@ export interface SearchQuery {
   hasDeadline: boolean;
   noDeadlinePassed: boolean;
   postedWithinDays: number | null;
+  /** First seen by any source in the last 24 hours. */
+  newToday: boolean;
+  /** Hide roles that rule out freshmen and sophomores. */
+  underclass: boolean;
+  /** Minimum resume keyword match (0-100); needs a profile. */
+  minMatch: number | null;
   minDuration: number | null;
   maxDuration: number | null;
   skills: string[];
@@ -46,6 +52,8 @@ export interface SearchQuery {
   excludeKeywords: string[];
   requiresNoCoverLetter: boolean;
   bookmarkedOnly: boolean;
+  /** Only roles already in the tracker. */
+  appliedOnly: boolean;
   hideApplied: boolean;
   showClosed: boolean;
   sort: SortKey;
@@ -54,8 +62,10 @@ export interface SearchQuery {
 }
 
 export const SORT_KEYS = [
+  'recommended',
   'relevance',
   'fit',
+  'match',
   'newest',
   'deadline',
   'pay',
@@ -93,6 +103,9 @@ export function emptyQuery(): SearchQuery {
     hasDeadline: false,
     noDeadlinePassed: true,
     postedWithinDays: null,
+    newToday: false,
+    underclass: false,
+    minMatch: null,
     minDuration: null,
     maxDuration: null,
     skills: [],
@@ -100,9 +113,10 @@ export function emptyQuery(): SearchQuery {
     excludeKeywords: [],
     requiresNoCoverLetter: false,
     bookmarkedOnly: false,
+    appliedOnly: false,
     hideApplied: false,
     showClosed: false,
-    sort: 'relevance',
+    sort: 'newest',
     page: 1,
     limit: 25,
   };
@@ -160,6 +174,9 @@ export function parseSearchParams(params: URLSearchParams): SearchQuery {
     hasDeadline: bool(params, 'hasDeadline'),
     noDeadlinePassed: params.has('noDeadlinePassed') ? bool(params, 'noDeadlinePassed') : true,
     postedWithinDays: num(params, 'postedWithin'),
+    newToday: bool(params, 'new'),
+    underclass: bool(params, 'underclass'),
+    minMatch: num(params, 'minMatch'),
     minDuration: num(params, 'minDuration'),
     maxDuration: num(params, 'maxDuration'),
     skills: list(params, 'skill'),
@@ -167,9 +184,10 @@ export function parseSearchParams(params: URLSearchParams): SearchQuery {
     excludeKeywords: list(params, 'exclude'),
     requiresNoCoverLetter: bool(params, 'noCoverLetter'),
     bookmarkedOnly: bool(params, 'bookmarked'),
+    appliedOnly: bool(params, 'applied'),
     hideApplied: bool(params, 'hideApplied'),
     showClosed: bool(params, 'showClosed'),
-    sort: sort && SORT_KEYS.includes(sort) ? sort : 'relevance',
+    sort: sort && SORT_KEYS.includes(sort) ? sort : 'newest',
     page: Math.max(1, num(params, 'page') ?? 1),
     limit: clamp(num(params, 'limit') ?? 25, 1, 100),
   };
@@ -214,6 +232,9 @@ export function toSearchParams(query: Partial<SearchQuery>): URLSearchParams {
   add('hasDeadline', query.hasDeadline ? 1 : null);
   if (query.noDeadlinePassed === false) params.set('noDeadlinePassed', '0');
   add('postedWithin', query.postedWithinDays);
+  add('new', query.newToday ? 1 : null);
+  add('underclass', query.underclass ? 1 : null);
+  add('minMatch', query.minMatch);
   add('minDuration', query.minDuration);
   add('maxDuration', query.maxDuration);
   add('skill', query.skills);
@@ -221,9 +242,10 @@ export function toSearchParams(query: Partial<SearchQuery>): URLSearchParams {
   add('exclude', query.excludeKeywords);
   add('noCoverLetter', query.requiresNoCoverLetter ? 1 : null);
   add('bookmarked', query.bookmarkedOnly ? 1 : null);
+  add('applied', query.appliedOnly ? 1 : null);
   add('hideApplied', query.hideApplied ? 1 : null);
   add('showClosed', query.showClosed ? 1 : null);
-  if (query.sort && query.sort !== 'relevance') params.set('sort', query.sort);
+  if (query.sort && query.sort !== 'newest') params.set('sort', query.sort);
   if (query.page && query.page > 1) params.set('page', String(query.page));
   if (query.limit && query.limit !== 25) params.set('limit', String(query.limit));
 

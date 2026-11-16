@@ -8,7 +8,7 @@ import type {
   Season,
   Sponsorship,
 } from '../types';
-import { hashId, slugify, stripEmDashes, stripHtml, truncate } from '../util';
+import { canonicalApplyUrl, hashId, slugify, stripEmDashes, stripHtml, truncate } from '../util';
 import { parseComp } from './comp';
 import { parseDeadline, parseDuration, parseStartDate } from './dates';
 import { parseEligibility } from './eligibility';
@@ -16,6 +16,8 @@ import { classifyField } from './field';
 import { parseLocations } from './location';
 import { classifyProgram, detectSeason } from './season';
 import { extractSkills } from './skills';
+import { extractKeywords, packKeywords } from './keywords';
+import { parseGradWindow, parseMajors, splitRequirements, underclassEligibility } from './requirements';
 
 export * from './comp';
 export * from './dates';
@@ -24,6 +26,8 @@ export * from './field';
 export * from './location';
 export * from './season';
 export * from './skills';
+export * from './keywords';
+export * from './requirements';
 
 /** What a source adapter produces, before enrichment. */
 export interface RawListing {
@@ -51,6 +55,11 @@ export interface RawListing {
   salaryCurrency?: string | null;
   /** Source's own active flag. Undefined means "present in feed, so open". */
   activeFlag?: boolean | null;
+  /**
+   * Keep the posting even when its wording doesn't read as an internship.
+   * Set for postings a user imported by hand: they already decided it's one.
+   */
+  assumeInternship?: boolean;
   tags?: string[];
 }
 
@@ -94,6 +103,12 @@ export interface NormalizedListing {
   requires_transcript: number;
   requires_portfolio: number;
   skills: string[];
+  /** Top ATS keywords, packed as [term, count] pairs in weight order. */
+  keywords: [string, number][];
+  grad_year_min: number | null;
+  grad_year_max: number | null;
+  majors: string[];
+  underclass_ok: number | null;
   tags: string[];
   is_paid: number | null;
   salary_min: number | null;
@@ -134,7 +149,7 @@ export function normalize(raw: RawListing, now = Date.now()): NormalizedListing 
   const description = stripHtml(raw.description) || null;
 
   const program = classifyProgram(title, description ?? '');
-  if (!program.isInternship) return null;
+  if (!program.isInternship && !raw.assumeInternship) return null;
 
   const term = detectSeason(title, raw.terms ?? [], description ?? '', raw.datePosted);
   const loc = parseLocations(raw.locations ?? [], description ?? '', raw.remoteFlag);
@@ -171,6 +186,19 @@ export function normalize(raw: RawListing, now = Date.now()): NormalizedListing 
     startDate && durationWeeks ? startDate + durationWeeks * 7 * 86400 : null;
 
   const skills = extractSkills(description ?? title);
+  const split = splitRequirements(description);
+  const keywords = extractKeywords(description, { title, must: split.must, nice: split.nice });
+  const grad = parseGradWindow(description);
+  const majors = parseMajors(description);
+  const underclass = underclassEligibility({
+    text: description ?? '',
+    title,
+    classYears: elig.classYears,
+    degrees: elig.degrees,
+    gradMin: grad.min,
+    gradMax: grad.max,
+    termYear: term.year,
+  });
   const normTitle = normalizeTitle(title);
   const companySlug = slugify(company);
 
@@ -184,7 +212,7 @@ export function normalize(raw: RawListing, now = Date.now()): NormalizedListing 
     company_url: raw.companyUrl ?? null,
     title,
     normalized_title: normTitle,
-    apply_url: raw.applyUrl,
+    apply_url: canonicalApplyUrl(raw.applyUrl),
     description: description ? truncate(description, 12000) : null,
     locations: loc.locations,
     primary_location: loc.primary,
@@ -214,6 +242,11 @@ export function normalize(raw: RawListing, now = Date.now()): NormalizedListing 
     requires_transcript: elig.requiresTranscript,
     requires_portfolio: elig.requiresPortfolio,
     skills,
+    keywords: packKeywords(keywords),
+    grad_year_min: grad.min,
+    grad_year_max: grad.max,
+    majors,
+    underclass_ok: underclass,
     tags: dedupeTags([...(raw.tags ?? []), ...(term.inferred ? ['term-inferred'] : [])]),
     is_paid: isPaid,
     salary_min: salaryMin,
@@ -223,13 +256,31 @@ export function normalize(raw: RawListing, now = Date.now()): NormalizedListing 
     comp_text: compText,
     date_posted: raw.datePosted ?? null,
     date_updated: raw.dateUpdated ?? raw.datePosted ?? null,
-    dedupe_key: `${companySlug}|${normTitle}|${term.season}|${term.year ?? ''}`,
+    // Company + title only; term and location are compared when duplicates are
+    // clustered (see markDuplicates), where a missing value can match anything.
+    dedupe_key: `${dedupeCompany(company)}|${normTitle}`,
     quality: 0,
     active: raw.activeFlag !== false,
   };
 
   listing.quality = qualityScore(listing);
   return listing;
+}
+
+/**
+ * Company name as it should compare across sources: "Jane Street Capital, LLC"
+ * and "Jane Street" are one employer. Only legal suffixes are dropped, never
+ * words that distinguish two real companies.
+ */
+export function dedupeCompany(company: string): string {
+  return slugify(
+    company
+      .toLowerCase()
+      .replace(/[.,]/g, ' ')
+      .replace(/\b(?:inc|incorporated|llc|l\.?l\.?c|ltd|limited|corp|corporation|co|company|plc|gmbh|ag|sa|lp|llp|the)\b/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim(),
+  );
 }
 
 function dedupeTags(tags: string[]): string[] {

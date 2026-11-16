@@ -6,6 +6,7 @@
  *   npm run sync -- --only greenhouse:figma
  *   npm run sync -- --max-boards 25       # cap ATS boards touched this run
  *   npm run sync -- --verify 200          # then link-check 200 listings
+ *   npm run sync -- --enrich 400          # fetch full descriptions for 400 bare postings
  *
  * Writes to the Postgres database in SUPABASE_DB_URL (or DATABASE_URL).
  */
@@ -33,6 +34,7 @@ async function main() {
     maxBoards: Number.isFinite(maxBoards) ? maxBoards : undefined,
     concurrency: Number.isFinite(concurrency) ? concurrency : undefined,
     noDiscover: arg('no-discover') === 'true',
+    enrich: arg('enrich') ? Number(arg('enrich') === 'true' ? 200 : arg('enrich')) : 0,
     trigger: 'cli',
     onProgress: (message) => console.log(message),
   });

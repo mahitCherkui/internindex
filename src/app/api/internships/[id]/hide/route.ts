@@ -1,4 +1,5 @@
 import { handler, ok, readJson, requireUserId } from '@/lib/api';
+import { isDemo } from '@/lib/demo';
 import { hideListing, unhideListing } from '@/lib/repo';
 
 export const dynamic = 'force-dynamic';
@@ -6,6 +7,7 @@ export const dynamic = 'force-dynamic';
 /** POST /api/internships/:id/hide: dismiss a listing so it stops appearing. */
 export const POST = handler(
   async (request: Request, { params }: { params: Promise<{ id: string }> }) => {
+    if (isDemo()) return ok({ hidden: true });
     const auth = await requireUserId();
     if (auth instanceof Response) return auth;
 

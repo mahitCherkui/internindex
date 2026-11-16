@@ -1,4 +1,5 @@
 import { fail, handler, ok, readJson, requireUserId } from '@/lib/api';
+import { isDemo } from '@/lib/demo';
 import { one } from '@/lib/db';
 import { createApplication, listApplications, type ApplicationFilters } from '@/lib/repo';
 import type { Internship } from '@/lib/types';
@@ -28,6 +29,11 @@ export const GET = handler(async (request: Request) => {
  * one click and stays linked to the listing.
  */
 export const POST = handler(async (request: Request) => {
+  if (isDemo()) {
+    const body = await request.clone().json().catch(() => ({}));
+    if (typeof body.internship_id === 'string') (await import('@/lib/demo')).demoApplied.add(body.internship_id);
+    return ok({ application: { id: 1, status: 'applied' } });
+  }
   const auth = await requireUserId();
   if (auth instanceof Response) return auth;
 

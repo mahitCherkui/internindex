@@ -2,7 +2,7 @@
 
 import { useState, type ReactNode } from 'react';
 import type { Facets, SearchQuery } from '@/lib/search-query';
-import { CLASS_YEARS, DEGREES, PROGRAM_TYPES } from '@/lib/types';
+import { CLASS_YEARS, DEGREES, PROGRAM_TYPES, roleFamilyLabel } from '@/lib/types';
 import { toDateInput, fromDateInput, titleCase } from '@/lib/util';
 
 export type QueryPatch = Partial<SearchQuery>;
@@ -45,6 +45,17 @@ export function Filters({
       {/* Quick toggles that students reach for most. */}
       <Group title="Quick filters" defaultOpen>
         <div className="space-y-1.5">
+          <Check
+            label="New in the last 24 hours"
+            checked={query.newToday}
+            onChange={(v) => onChange({ newToday: v })}
+          />
+          <Check
+            label="Open to freshmen & sophomores"
+            hint="Hides postings that require juniors, seniors, or an earlier graduation date"
+            checked={query.underclass}
+            onChange={(v) => onChange({ underclass: v })}
+          />
           <Check
             label="Only roles I'm eligible for"
             hint="Uses your work authorization, GPA, and degree level"
@@ -119,7 +130,7 @@ export function Filters({
 
       <Group title="Specific role" count={query.roleFamilies.length}>
         <CheckList
-          buckets={(facets?.roleFamilies ?? []).map((b) => ({ ...b, label: titleCase(b.label) }))}
+          buckets={(facets?.roleFamilies ?? []).map((b) => ({ ...b, label: roleFamilyLabel(b.value) }))}
           selected={query.roleFamilies}
           onChange={(roleFamilies) => onChange({ roleFamilies })}
           searchable
@@ -408,7 +419,7 @@ const SPONSORSHIP_LABELS: Record<string, string> = {
   unknown: 'Not stated',
 };
 
-function countActive(q: SearchQuery): number {
+export function countActive(q: SearchQuery): number {
   let n = 0;
   n += q.seasons.length + q.years.length + q.fields.length + q.roleFamilies.length;
   n += q.programTypes.length + q.companies.length + q.countries.length + q.regions.length;
@@ -433,6 +444,9 @@ function countActive(q: SearchQuery): number {
   if (q.postedWithinDays) n++;
   if (q.minDuration) n++;
   if (q.maxDuration) n++;
+  if (q.newToday) n++;
+  if (q.underclass) n++;
+  if (q.minMatch != null) n++;
   return n;
 }
 

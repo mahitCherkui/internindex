@@ -1,9 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { ImportPanel } from './ImportPanel';
 import { EmptyState, PageHeader, SectionTitle, StatTile } from './ui';
 import { formatDateTime, relativeTime } from '@/lib/util';
-import { KIND_LABELS } from '@/lib/sources/seed';
+import { KIND_LABELS } from '@/lib/types';
 
 interface SourceRow {
   id: number;
@@ -282,6 +283,12 @@ export function SourcesClient() {
               and starts following any employer board it recognizes.
             </p>
           </form>
+        </section>
+
+        {/* Import from sites that aren't crawled */}
+        <section id="import">
+          <SectionTitle>Import a posting (LinkedIn, Handshake, Indeed, Jobright…)</SectionTitle>
+          <ImportPanel onImported={load} />
         </section>
 
         {failing.length > 0 ? (

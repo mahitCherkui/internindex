@@ -80,7 +80,9 @@ unless you explicitly ask for the archive.
 
 Two schedulers keep the shared catalog current; either alone is enough:
 
-- **GitHub Actions** (`.github/workflows/sync.yml`) runs every 2 hours. It fetches
+- **GitHub Actions** (`.github/workflows/sync.yml`) runs a full pass every 2 hours,
+  and a fresh-postings pass (community lists, Hacker News, Jane Street, Amazon and a
+  small slice of Greenhouse/Lever/Ashby boards) on the odd hours in between. The full pass fetches
   every feed plus a rotating slice of 900 company boards, reconciles openness,
   merges duplicates, and link-checks 500 listings. With several thousand boards
   tracked, that walks the whole set about every day and a half. It needs one
@@ -109,7 +111,12 @@ There's also a "Sync now" button on the Sources page for any signed-in user.
 | **The Muse** | Employers whose own site is a closed portal: hospitals, insurers, banks, retailers, consumer brands, school districts and agencies. Read category by category (about 10,000 internships), and each employer's posting page reveals its real job board for discovery. An optional free `MUSE_API_KEY` raises the request budget |
 | **ORISE / Zintellect** | The federal research participation catalog. NIH, CDC, FDA, EPA, NASA, NIST, the Army and Navy labs, and every Department of Energy national laboratory recruit students here |
 | **USAJOBS** | Federal student openings including the government-wide Pathways Internship Program. Needs a free API key (see `.env.example`); the source stays quiet without one |
-| Community lists | The SimplifyJobs (internship + new-grad) and vanshb03 repos, broad coverage with per-listing active flags |
+| Community lists | SimplifyJobs Summer 2027 (with off-season terms) and New Grad, vanshb03 Summer 2027 and New Grad 2027, and speedyapply's 2027 SWE (US + international) and AI tables, with per-listing active flags |
+| More GitHub lists | zapplyjobs Internships 2027 and ML internships (tracking links followed to the employer's ATS), Northwestern FinTech's 2027 quant list, Canadian Tech Internships 2027, jobbie Summer 2027 |
+| Gem | Startups' public Gem job boards |
+| **Hacker News** | "Ask HN: Who is hiring?" threads (this month and last) read through the official Algolia HN API; only comments that mention internships or co-ops are kept |
+| **Jane Street** | Its public careers JSON, with intern roles flagged by their availability field |
+| Recruitee | European startups' public careers API |
 | Public boards | RemoteOK, Jobicy, Arbeitnow, covering remote and European roles |
 
 **The source list grows itself, and that is the main engine.** Every sync reads
@@ -209,6 +216,86 @@ research, lab opportunity, postbac, practicum, clinical rotation, scribe,
 externship and prehealth programs all qualify.
 
 ---
+
+### Sources that are imported, not crawled
+
+LinkedIn, Handshake, Indeed, Glassdoor, Jobright, Wellfound, Built In, Levels.fyi,
+Otta / Welcome to the Jungle, RippleMatch, Dice, ZipRecruiter, Simplify's own site
+and intern-list.com either forbid automated access in their terms or sit behind a
+login, so the app never requests them (`src/lib/no-fetch.ts`; link verification
+skips them too). Instead, **Sources → Import a posting** takes a pasted posting or
+a saved-jobs CSV. If the paste contains a link to a company ATS (Greenhouse,
+Workday, Lever…), that original posting is fetched through the ATS's official API
+and stored as the canonical copy, and the employer's board is tracked from then on.
+Google, Meta, Apple, Microsoft, Citadel, Two Sigma and D. E. Shaw have no open jobs
+API (Microsoft's answers "Not authorized", Google's results are disallowed by
+robots.txt); their internships still arrive through the community lists and import.
+
+**Full descriptions for bare postings.** The community lists carry only a title and
+a link. Each sync (`--enrich N`) fetches the full posting behind the newest bare links
+through the ATS's own per-job API (Greenhouse, Lever, Ashby, SmartRecruiters,
+Workday), or else the schema.org `JobPosting` data careers pages embed for Google
+for Jobs, only where robots.txt allows (`src/lib/sources/robots.ts`). Opening a bare
+posting enriches it on the spot. That is what gives a GitHub-list role its
+requirements, keywords, pay, deadline and eligibility.
+
+**Workday.** Workday answers HTTP 429 to Node's built-in `fetch` regardless of
+headers, while the same request through `node:https` succeeds, so Workday hosts use
+that transport (`src/lib/sources/http.ts`).
+
+`npm run audit-sources` exercises every feed plus a sample of boards per ATS without
+touching the database and reports which are slow, empty or failing.
+
+## Requirements & ATS breakdown
+
+Every posting is parsed (deterministically, no LLM) into:
+
+- **Must-have vs. nice-to-have** qualifications, from section headings ("Minimum
+  Qualifications" / "Preferred", "What you'll need" / "Bonus points"), falling back
+  to sentence cues ("required", "a plus") when a posting has no headings
+- **Graduation window**, majors, class years, GPA, sponsorship, location, season, pay
+- **Freshman/sophomore eligibility** (`underclass_ok`): invited, ruled out (e.g. a
+  2027–2028 grad window on a Summer 2027 role), or not stated
+- **ATS keywords**: languages, frameworks, tools and concept phrases ("A/B testing",
+  "distributed systems") ranked by repetition and by appearing under must-haves
+
+With a resume or skills on your profile, each card shows a **match %** and the top
+missing keywords, and the detail panel shows *You have / Missing*, a **How to pass
+the ATS** table (which resume section each keyword belongs in), and red flags such as
+"Requires 2027–2028 grads — you graduate in 2030". Filter with **Fr / Soph eligible**
+and **Match 50%+**, or sort by **Best resume match**. `npm run reclassify` backfills
+these fields for listings already in the catalog.
+
+## Your resume drives everything
+
+Upload a resume (PDF, .docx or text) on the search page or Profile. It is parsed on
+the server (`src/lib/parse/resume.ts`) into name, contact links, school, degree,
+major, minor, graduation date, class year (derived from the graduation date), GPA,
+skills, and the role families your experience points to. You review the fields
+before they are saved. From then on every job gets a match score, an eligibility
+check against your class year and graduation window, and a place in the
+**Recommended** tab, ranked by keyword match (40%), fit with the kinds of roles on
+your resume (30%), eligibility (20%) and freshness (10%).
+
+## Applying
+
+- **Apply** goes straight to the original application page (the ATS copy wins dedupe).
+- **Apply + Track** opens it and records the role as Applied today.
+- Search page keys: `j`/`k` move, `Enter` open, `a` apply + track, `s` save,
+  `h` hide, `c` quick copy, `/` search, `?` help.
+- **Quick copy** holds your name, email, school, graduation date, links, work
+  authorization and saved answers for pasting into forms (edit on Profile).
+- **Daily digest** above search results: new roles from the last 24 hours for each
+  saved search, plus saved roles closing within 3 days.
+
+## Previewing the UI without Supabase
+
+```bash
+INTERNINDEX_DEMO=1 npm run dev
+```
+
+Serves the search page from live public feeds and a sample freshman profile, skips
+sign-in, and stores nothing. It is ignored when `NODE_ENV` is production.
 
 ## Accounts
 

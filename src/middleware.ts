@@ -45,6 +45,9 @@ export async function middleware(request: NextRequest) {
 
   let response = NextResponse.next({ request });
 
+  // Local preview without Supabase (`INTERNINDEX_DEMO=1 npm run dev`). Never in production.
+  if (process.env.NODE_ENV !== 'production' && process.env.INTERNINDEX_DEMO === '1') return response;
+
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !key) return isPublic(pathname) ? response : deny(request, pathname, search);

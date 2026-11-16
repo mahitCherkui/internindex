@@ -576,3 +576,274 @@ describe('classifyField: business analytics against description noise', () => {
     assert.equal(classifyField('Sales Analytics Intern').roleFamily, 'business-analytics');
   });
 });
+
+describe('tech role coverage', () => {
+  const cases: [title: string, family: string][] = [
+    ['Quantitative Developer Intern', 'quant-dev'],
+    ['Quant Trader Intern', 'quant-trading'],
+    ['Quantitative Researcher Intern', 'quant-research'],
+    ['UX Research Intern', 'ux-research'],
+    ['Product Design Intern', 'product-design'],
+    ['Site Reliability Engineering Intern', 'devops'],
+    ['Firmware Engineering Intern', 'embedded'],
+    ['Data Engineering Intern', 'data-engineering'],
+    ['Machine Learning Engineer Intern', 'machine-learning'],
+    ['Security Engineering Intern', 'security'],
+    ['IT Support Intern', 'it-support'],
+    ['Associate Product Manager Intern', 'product-management'],
+    ['Hardware Engineer Intern', 'electrical'],
+  ];
+  for (const [title, family] of cases) {
+    it(`${title} -> ${family}`, () => assert.equal(classifyField(title).roleFamily, family));
+  }
+});
+
+// ------------------------------------------------- requirements & ATS keywords
+
+import { extractKeywords, matchKeywords, packKeywords, resumeKeywords, unpackKeywords } from '../src/lib/parse/keywords';
+import { parseGradWindow, parseMajors, splitRequirements, underclassEligibility } from '../src/lib/parse/requirements';
+import { computeEligibility, computeMatch } from '../src/lib/fit';
+import type { ProfileView } from '../src/lib/types';
+
+const POSTING = `About the role
+You'll build data pipelines for our trading platform.
+
+Minimum Qualifications:
+• Currently pursuing a BS in Computer Science, Statistics, or a related field
+• Expected graduation between December 2027 and June 2028
+• Proficiency in Python and SQL
+• Experience with distributed systems or data pipelines
+
+Preferred Qualifications:
+• Experience with Spark or Airflow
+• Familiarity with A/B testing and statistical modeling
+• Python experience in production
+
+Benefits
+• Free lunch`;
+
+describe('splitRequirements', () => {
+  it('splits must-haves from nice-to-haves by section heading', () => {
+    const split = splitRequirements(POSTING);
+    assert.equal(split.method, 'sections');
+    assert.equal(split.must.length, 4);
+    assert.match(split.must[2], /Python and SQL/);
+    assert.equal(split.nice.length, 3);
+    assert.match(split.nice[0], /Spark or Airflow/);
+    // Nothing from Benefits or About leaks in.
+    assert.ok(![...split.must, ...split.nice].some((s) => /lunch|trading platform/.test(s)));
+  });
+
+  it('reads headings that share a line with their first bullet', () => {
+    const split = splitRequirements('What you need: • Java • Data structures Bonus points: • Kotlin experience');
+    assert.deepEqual(split.must, ['Java', 'Data structures']);
+    assert.ok(split.nice.some((s) => /Kotlin/.test(s)));
+  });
+
+  it('moves a "preferred" bullet out of the must-have list', () => {
+    const split = splitRequirements('Requirements:\n• Python required\n• Experience with React is preferred');
+    assert.deepEqual(split.must, ['Python required']);
+    assert.deepEqual(split.nice, ['Experience with React is preferred']);
+  });
+
+  it('falls back to sentence cues when there are no headings', () => {
+    const split = splitRequirements('You must have experience with Java. Knowledge of Kubernetes is a plus. We love dogs.');
+    assert.equal(split.method, 'sentences');
+    assert.deepEqual(split.must, ['You must have experience with Java.']);
+    assert.deepEqual(split.nice, ['Knowledge of Kubernetes is a plus.']);
+  });
+});
+
+describe('parseGradWindow', () => {
+  it('reads a graduation range', () => {
+    assert.deepEqual(parseGradWindow(POSTING), { min: 2027, max: 2028 });
+  });
+  it('reads a single expected graduation year', () => {
+    assert.deepEqual(parseGradWindow('Must have an expected graduation date of May 2028.'), { min: 2028, max: 2028 });
+    assert.deepEqual(parseGradWindow('Open to the class of 2029.'), { min: 2029, max: 2029 });
+  });
+  it('ignores years that are not about graduation', () => {
+    assert.deepEqual(parseGradWindow('Founded in 2012, we raised a Series B in 2024.'), { min: null, max: null });
+  });
+});
+
+describe('parseMajors', () => {
+  it('finds majors named in degree language only', () => {
+    assert.deepEqual(parseMajors(POSTING), ['Computer Science', 'Statistics', 'STEM / related field']);
+    assert.deepEqual(parseMajors('Our statistics team ships dashboards.'), []);
+  });
+});
+
+describe('underclassEligibility', () => {
+  const base = { text: '', title: 'Software Engineering Intern', classYears: [], degrees: [], gradMin: null, gradMax: null, termYear: 2027 };
+  it('invites freshmen and sophomores when the posting names them', () => {
+    assert.equal(underclassEligibility({ ...base, text: 'Open to first- and second-year students.' }), 1);
+    assert.equal(underclassEligibility({ ...base, classYears: ['Sophomore'] }), 1);
+  });
+  it('rules them out by graduation window', () => {
+    // Summer 2027 intern graduating by 2028 is a rising senior.
+    assert.equal(underclassEligibility({ ...base, gradMin: 2027, gradMax: 2028 }), 0);
+    assert.equal(underclassEligibility({ ...base, gradMin: 2029, gradMax: 2030 }), 1);
+  });
+  it('rules them out for graduate-only and upperclass-only programs', () => {
+    assert.equal(underclassEligibility({ ...base, degrees: ['PhD'] }), 0);
+    assert.equal(underclassEligibility({ ...base, text: 'Must be a rising senior.' }), 0);
+  });
+  it('stays unknown when the posting is silent', () => {
+    assert.equal(underclassEligibility(base), null);
+  });
+});
+
+describe('extractKeywords', () => {
+  const keywords = extractKeywords(POSTING, { title: 'Data Engineering Intern', ...splitRequirements(POSTING) });
+  const terms = keywords.map((k) => k.term);
+  it('finds tools, languages and concept phrases', () => {
+    for (const t of ['Python', 'SQL', 'Spark', 'Airflow', 'Distributed systems', 'Data pipelines', 'A/B testing', 'Statistical modeling']) {
+      assert.ok(terms.includes(t), t);
+    }
+  });
+  it('counts repetition and ranks must-haves above nice-to-haves', () => {
+    const python = keywords.find((k) => k.term === 'Python')!;
+    assert.equal(python.count, 2);
+    assert.ok(terms.indexOf('Python') < terms.indexOf('Airflow'));
+  });
+  it('round-trips through the compact storage form', () => {
+    const back = unpackKeywords(JSON.stringify(packKeywords(keywords)));
+    assert.deepEqual(back.map((k) => k.term), terms);
+  });
+});
+
+describe('resume match', () => {
+  const keywords = extractKeywords(POSTING, { ...splitRequirements(POSTING) });
+  it('splits have / missing against a resume', () => {
+    const mine = resumeKeywords('Skills: Python, SQL, Pandas. Built data pipelines in Airflow.');
+    const result = matchKeywords(keywords, mine);
+    assert.ok(result.have.some((k) => k.term === 'Python'));
+    assert.ok(result.missing.some((k) => k.term === 'Spark'));
+    assert.ok(result.score! > 0 && result.score! < 100);
+  });
+});
+
+function profile(patch: Partial<ProfileView>): ProfileView {
+  return {
+    user_id: 'u', name: null, email: null, school: null, major: null, minor: null, degree_level: null,
+    class_year: null, grad_month: null, grad_year: null, gpa: null, work_auth: null, has_clearance: 0,
+    skills_json: '[]', preferred_seasons_json: '[]', preferred_years_json: '[]', preferred_fields_json: '[]',
+    preferred_locations_json: '[]', remote_pref: 'any', willing_to_relocate: 1, min_hourly: null, paid_only: 0,
+    earliest_start: null, latest_start: null, resume_text: null, weekly_goal: 5, onboarded: 1, calendar_token: 't',
+    created_at: 0, updated_at: 0, skills: [], preferred_seasons: [], preferred_years: [], preferred_fields: [],
+    preferred_locations: [],
+    ...patch,
+  } as ProfileView;
+}
+
+describe('eligibility badge', () => {
+  const freshman = profile({ class_year: 'Freshman', grad_year: 2030, major: 'Statistics and Data Science' });
+  const listing = { class_years: [], degrees: ['Bachelors'], grad_year_min: 2027, grad_year_max: 2028, underclass_ok: 0, majors: ['Computer Science', 'Statistics'], year: 2027 };
+
+  it('flags a graduation window the student is outside of', () => {
+    const badge = computeEligibility(listing, freshman);
+    assert.equal(badge.status, 'ineligible');
+    assert.ok(badge.flags.includes('Requires 2027–2028 grads — you graduate in 2030'));
+  });
+
+  it('marks roles that invite underclassmen', () => {
+    const badge = computeEligibility({ ...listing, grad_year_min: null, grad_year_max: null, underclass_ok: 1 }, freshman);
+    assert.equal(badge.status, 'eligible');
+    assert.equal(badge.label, 'Open to fr/soph');
+  });
+
+  it('matches a major by substring', () => {
+    const badge = computeEligibility({ ...listing, grad_year_min: null, grad_year_max: null, underclass_ok: null }, freshman);
+    assert.equal(badge.status, 'unclear');
+    assert.deepEqual(badge.flags, []);
+  });
+
+  it('scores resume match from listed skills and resume text', () => {
+    const keywords = extractKeywords(POSTING);
+    const match = computeMatch(keywords, profile({ skills: ['Python'], resume_text: 'SQL and Spark projects' }));
+    assert.ok(match);
+    assert.ok(match!.have.includes('Python') && match!.have.includes('SQL') && match!.have.includes('Spark'));
+    assert.ok(match!.missing.includes('Airflow'));
+  });
+});
+
+describe('normalize fills the requirements columns', () => {
+  it('stores keywords, grad window, majors and underclass eligibility', () => {
+    const listing = normalize({
+      source: 'test', sourceKind: 'ats', sourceId: '1', company: 'Acme', title: 'Data Engineering Intern',
+      applyUrl: 'https://boards.greenhouse.io/acme/jobs/1', description: POSTING, terms: ['Summer 2027'],
+    })!;
+    assert.ok(listing.keywords.length > 5);
+    assert.equal(listing.grad_year_min, 2027);
+    assert.equal(listing.underclass_ok, 0);
+    assert.ok(listing.majors.includes('Statistics'));
+  });
+});
+
+// ------------------------------------------------- resume import & recommendations
+
+import { classYearFor, parseResume } from '../src/lib/parse/resume';
+import { computeRecommendation } from '../src/lib/fit';
+
+describe('parseResume', () => {
+  const text = `Jordan Rivera
+jordan.rivera@example.edu | (555) 010-2233 | linkedin.com/in/jordan-rivera | github.com/jrivera
+
+EDUCATION
+Northfield State University, Austin, TX
+B.S. in Statistics and Data Science, Minor in Computer Science      Expected May 2030
+GPA: 3.85/4.0
+
+EXPERIENCE
+Undergraduate Research Assistant, Data Science Lab          Sep 2026 – Present
+- Built Python data pipelines with Pandas and SQL; trained scikit-learn models
+
+SKILLS
+Python, R, SQL, Git`;
+  const r = parseResume(text, new Date('2026-11-16'));
+
+  it('reads contact details and links', () => {
+    assert.equal(r.name, 'Jordan Rivera');
+    assert.equal(r.email, 'jordan.rivera@example.edu');
+    assert.equal(r.phone, '(555) 010-2233');
+    assert.equal(r.linkedin_url, 'https://linkedin.com/in/jordan-rivera');
+    assert.equal(r.github_url, 'https://github.com/jrivera');
+  });
+  it('reads education and derives class year from the graduation date', () => {
+    assert.equal(r.school, 'Northfield State University');
+    assert.equal(r.degree_level, 'Bachelors');
+    assert.equal(r.major, 'Statistics and Data Science');
+    assert.equal(r.minor, 'Computer Science');
+    assert.equal(r.grad_year, 2030);
+    assert.equal(r.class_year, 'Freshman');
+    assert.equal(r.gpa, 3.85);
+  });
+  it('finds skills and infers role interests from experience and major', () => {
+    for (const s of ['Python', 'SQL', 'Pandas', 'scikit-learn', 'R']) assert.ok(r.skills.includes(s), s);
+    assert.equal(r.roleFamilies[0], 'data-science');
+  });
+  it('maps graduation dates onto class years across the academic year', () => {
+    const nov = new Date('2026-11-16');
+    assert.equal(classYearFor(2027, 5, nov), 'Senior');
+    assert.equal(classYearFor(2028, 5, nov), 'Junior');
+    assert.equal(classYearFor(2029, 5, nov), 'Sophomore');
+    assert.equal(classYearFor(2027, 12, nov), 'Junior'); // a December grad has one more academic year
+  });
+});
+
+describe('recommendation score', () => {
+  const p = profile({ resume_text: 'Python SQL', preferred_roles: ['data-science', 'machine-learning'] } as never);
+  const listing = { role_family: 'data-science', field: 'Data & Analytics', first_seen_at: Date.now() / 1000, date_posted: null };
+  const ok = { status: 'eligible' as const, label: '', flags: [] };
+  it('ranks role affinity, match and eligibility together', () => {
+    const fit = computeRecommendation(listing, { score: 80, have: [], missing: [] }, ok, p)!;
+    const offRole = computeRecommendation({ ...listing, role_family: 'sales', field: 'Sales & Business Development' }, { score: 80, have: [], missing: [] }, ok, p)!;
+    const ineligible = computeRecommendation(listing, { score: 100, have: [], missing: [] }, { status: 'ineligible', label: '', flags: ['x'] }, p)!;
+    assert.ok(fit > offRole);
+    assert.ok(ineligible <= 30 && ineligible < offRole);
+  });
+  it('is null without a resume or skills', () => {
+    assert.equal(computeRecommendation(listing, null, ok, profile({})), null);
+  });
+});

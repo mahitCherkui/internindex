@@ -39,7 +39,19 @@ export async function getProfile(userId: string): Promise<ProfileView> {
     preferred_years: jsonArray(profile.preferred_years_json),
     preferred_fields: jsonArray(profile.preferred_fields_json),
     preferred_locations: jsonArray(profile.preferred_locations_json),
+    quick_answers: jsonObject(profile.quick_answers_json),
+    preferred_roles: jsonArray(profile.preferred_roles_json),
   };
+}
+
+function jsonObject(raw: string | null | undefined): Record<string, string> {
+  try {
+    const value = JSON.parse(raw ?? '{}');
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, String(v ?? '')]));
+  } catch {
+    return {};
+  }
 }
 
 const PROFILE_SCALARS = [
@@ -47,6 +59,7 @@ const PROFILE_SCALARS = [
   'grad_month', 'grad_year', 'gpa', 'work_auth', 'has_clearance', 'remote_pref',
   'willing_to_relocate', 'min_hourly', 'paid_only', 'earliest_start', 'latest_start',
   'resume_text', 'weekly_goal', 'onboarded',
+  'phone', 'linkedin_url', 'github_url', 'portfolio_url', 'pronouns', 'digest_enabled', 'digest_seen_at',
 ] as const;
 
 const PROFILE_ARRAYS: Record<string, string> = {
@@ -55,6 +68,7 @@ const PROFILE_ARRAYS: Record<string, string> = {
   preferred_years: 'preferred_years_json',
   preferred_fields: 'preferred_fields_json',
   preferred_locations: 'preferred_locations_json',
+  preferred_roles: 'preferred_roles_json',
 };
 
 export async function updateProfile(
@@ -78,6 +92,21 @@ export async function updateProfile(
     const value = patch[key];
     sets.push(`${column} = ?`);
     params.push(JSON.stringify(Array.isArray(value) ? value.map(String) : []));
+  }
+
+  if ('quick_answers' in patch) {
+    const value = patch.quick_answers;
+    const clean =
+      value && typeof value === 'object' && !Array.isArray(value)
+        ? Object.fromEntries(
+            Object.entries(value as Record<string, unknown>)
+              .filter(([k]) => k.trim())
+              .slice(0, 30)
+              .map(([k, v]) => [k.trim().slice(0, 120), String(v ?? '').slice(0, 4000)]),
+          )
+        : {};
+    sets.push('quick_answers_json = ?');
+    params.push(JSON.stringify(clean));
   }
 
   if (sets.length > 0) {

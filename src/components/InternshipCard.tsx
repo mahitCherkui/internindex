@@ -1,277 +1,232 @@
 'use client';
 
-import { useState } from 'react';
+import { memo } from 'react';
+import { isNew } from '@/lib/listing-actions';
 import type { InternshipView } from '@/lib/types';
-import { formatDate, formatPay, relativeTime, truncate } from '@/lib/util';
-import { DeadlineBadge, ExternalIcon, FitBadge, StatusBadge } from './ui';
+import { roleFamilyLabel } from '@/lib/types';
+import { daysUntil, formatPay, shortAge } from '@/lib/util';
+import { CompanyLogo } from './CompanyLogo';
+import { Icon, MatchRing, matchLabel } from './Match';
+import { StatusBadge } from './ui';
 
 /**
- * One search result. Shows the facts a student decides on at a glance (term,
- * location, pay, eligibility, deadline) and keeps the two actions that matter
- * (apply, track) one click away.
+ * One search result, laid out like a modern job feed: logo, freshness chips,
+ * title, a grid of the facts that decide whether to apply, and a match panel
+ * on the right with the score ring and the eligibility signals that matter.
  */
-export function InternshipCard({
+export const InternshipCard = memo(function InternshipCard({
   listing,
+  selected = false,
+  onSelect,
   onTrack,
   onBookmark,
   onHide,
+  onApplyTrack,
 }: {
   listing: InternshipView;
+  selected?: boolean;
+  onSelect?: (listing: InternshipView) => void;
   onTrack: (listing: InternshipView) => void;
   onBookmark: (listing: InternshipView) => void;
   onHide: (listing: InternshipView) => void;
+  onApplyTrack?: (listing: InternshipView) => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const pay = formatPay(
-    listing.salary_min,
-    listing.salary_max,
-    listing.salary_period,
-    listing.salary_currency ?? 'USD',
-  );
-
-  const term =
-    listing.season !== 'Unknown'
-      ? `${listing.season}${listing.year ? ` ${listing.year}` : ''}`
-      : listing.year
-        ? String(listing.year)
-        : null;
-
+  const pay = formatPay(listing.salary_min, listing.salary_max, listing.salary_period, listing.salary_currency ?? 'USD');
   const posted = listing.date_posted ?? listing.first_seen_at;
+  const fresh = isNew(listing);
+  const deadlineDays = daysUntil(listing.deadline);
+  const stop = (event: React.SyntheticEvent) => event.stopPropagation();
+
+  const arrangement =
+    listing.location_type === 'remote' ? 'Remote' : listing.location_type === 'hybrid' ? 'Hybrid' : listing.location_type === 'onsite' ? 'Onsite' : null;
+  const term = listing.season !== 'Unknown' ? `${listing.season}${listing.year ? ` ${listing.year}` : ''}` : listing.year ? String(listing.year) : null;
+  const program = listing.program_type === 'internship' ? 'Internship' : listing.program_type.charAt(0).toUpperCase() + listing.program_type.slice(1);
+  const eligibilityText =
+    listing.eligibility.status === 'ineligible'
+      ? 'Not eligible'
+      : listing.underclass_ok === 1
+        ? 'Fr / Soph OK'
+        : listing.class_years.length
+          ? listing.class_years.join(', ')
+          : listing.underclass_ok === 0
+            ? 'Juniors+'
+            : null;
+
+  const facts: { icon: () => React.ReactNode; text: string | null; tone?: string }[] = [
+    { icon: Icon.pin, text: listing.primary_location ? `${listing.primary_location}${listing.locations.length > 1 ? ` +${listing.locations.length - 1}` : ''}` : null },
+    { icon: Icon.briefcase, text: program },
+    { icon: Icon.building, text: arrangement },
+    { icon: Icon.calendar, text: term },
+    { icon: Icon.dollar, text: pay, tone: 'var(--good-text)' },
+    { icon: Icon.cap, text: eligibilityText, tone: listing.eligibility.status === 'ineligible' ? 'var(--critical)' : listing.underclass_ok === 1 ? 'var(--good-text)' : undefined },
+  ].filter((f) => f.text);
+
+  const signals: string[] = [];
+  if (listing.underclass_ok === 1) signals.push('Open to fr / soph');
+  if (listing.sponsorship === 'offers') signals.push('Sponsors visas');
+  if (listing.eligibility.status === 'eligible') signals.push('You meet eligibility');
+  if (listing.gpa_min == null && listing.description) signals.push('No GPA cutoff');
 
   return (
-    <article className="card p-3.5 transition-colors" style={{ borderColor: 'var(--line)' }}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <h3 className="text-[0.9375rem] leading-snug font-semibold">
-              <a
-                href={listing.apply_url}
-                target="_blank"
-                rel="noopener noreferrer nofollow"
-                className="hover:underline"
-              >
-                {listing.title}
-              </a>
-            </h3>
-            {listing.fit ? (
-              <FitBadge
-                score={listing.fit.score}
-                grade={listing.fit.grade}
-                eligible={listing.fit.eligible}
-              />
-            ) : null}
-          </div>
-
-          <p className="mt-0.5 text-[0.8125rem]" style={{ color: 'var(--ink-secondary)' }}>
-            <span className="font-medium" style={{ color: 'var(--ink-primary)' }}>
-              {listing.company}
-            </span>
-            {listing.primary_location ? <> · {listing.primary_location}</> : null}
-            {listing.locations.length > 1 ? (
-              <span style={{ color: 'var(--ink-muted)' }}>
-                {' '}
-                +{listing.locations.length - 1} more
+    <article
+      id={`listing-${listing.id}`}
+      role={onSelect ? 'option' : undefined}
+      aria-selected={onSelect ? selected : undefined}
+      tabIndex={onSelect ? -1 : undefined}
+      onClick={onSelect ? () => onSelect(listing) : undefined}
+      className={`card ${onSelect ? 'card-interactive' : ''} group flex overflow-hidden`}
+      style={{ borderRadius: 18 }}
+    >
+      <div className="min-w-0 flex-1 p-4">
+        <div className="flex items-start gap-3.5">
+          <CompanyLogo company={listing.company} companyUrl={listing.company_url} applyUrl={listing.apply_url} size={56} />
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="badge badge-time" title={`First seen ${new Date(listing.first_seen_at * 1000).toLocaleString()}`}>
+                {listing.date_posted ? shortAge(posted) : `Seen ${shortAge(listing.first_seen_at)}`}
               </span>
-            ) : null}
+              {fresh ? <span className="badge badge-new">Early applicant</span> : null}
+              {deadlineDays != null && deadlineDays >= 0 && deadlineDays <= 14 ? (
+                <span className={`badge ${deadlineDays <= 3 ? 'badge-bad' : 'badge-warn'}`}>
+                  {deadlineDays === 0 ? 'Closes today' : `Closes in ${deadlineDays}d`}
+                </span>
+              ) : null}
+              {listing.application_status ? <StatusBadge status={listing.application_status} small /> : null}
+            </div>
+            <h3 className="mt-1.5 text-[1.0625rem] leading-snug font-bold tracking-[-0.015em]">
+              {onSelect ? (
+                listing.title
+              ) : (
+                <a href={listing.apply_url} target="_blank" rel="noopener noreferrer nofollow" className="hover:underline">
+                  {listing.title}
+                </a>
+              )}
+            </h3>
+            <p className="mt-0.5 truncate text-[0.8125rem]">
+              <span className="font-semibold">{listing.company}</span>
+              <span style={{ color: 'var(--ink-muted)' }}> / {roleFamilyLabel(listing.role_family)}</span>
+            </p>
+          </div>
+        </div>
+
+        <div className="my-3 h-px" style={{ background: 'var(--line)' }} />
+
+        <ul className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[0.8125rem] sm:grid-cols-3" style={{ color: 'var(--ink-secondary)' }}>
+          {facts.map(({ icon: FactIcon, text, tone }) => (
+            <li key={String(text)} className="flex min-w-0 items-center gap-1.5" style={tone ? { color: tone } : undefined}>
+              <span className="shrink-0" style={{ color: 'var(--ink-muted)' }}>
+                <FactIcon />
+              </span>
+              <span className="truncate">{text}</span>
+            </li>
+          ))}
+        </ul>
+
+        {listing.match?.missing.length ? (
+          <p className="mt-2.5 truncate text-[0.75rem]" style={{ color: 'var(--ink-muted)' }}>
+            Missing keywords:{' '}
+            <span style={{ color: 'var(--critical)' }}>{listing.match.missing.slice(0, 3).join(', ')}</span>
           </p>
-        </div>
+        ) : null}
 
-        {listing.application_status ? (
-          <StatusBadge status={listing.application_status} small />
-        ) : null}
-      </div>
-
-      {/* Facts row */}
-      <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-        {term ? <span className="chip">{term}</span> : null}
-        {listing.program_type !== 'internship' ? (
-          <span className="chip">{listing.program_type}</span>
-        ) : null}
-        <span className="chip">{listing.field}</span>
-        {listing.location_type !== 'unknown' && listing.location_type !== 'onsite' ? (
-          <span className="chip">{listing.location_type}</span>
-        ) : null}
-        {pay ? (
-          <span className="chip" style={{ color: 'var(--good-text)' }}>
-            {pay}
+        <div className="mt-3 flex items-center gap-2" onClick={stop}>
+          <span className="truncate text-[0.75rem]" style={{ color: 'var(--ink-muted)' }}>
+            {listing.seen_sources.length > 1 ? `Seen on ${listing.seen_sources.length} sources` : ''}
           </span>
-        ) : listing.is_paid === 0 ? (
-          <span className="chip">unpaid</span>
-        ) : null}
-        {listing.duration_weeks ? <span className="chip">{listing.duration_weeks} weeks</span> : null}
-        {listing.gpa_min ? <span className="chip">GPA {listing.gpa_min.toFixed(1)}+</span> : null}
-        {listing.requires_citizenship ? <span className="chip">US citizens only</span> : null}
-        {listing.requires_clearance ? <span className="chip">clearance</span> : null}
-        {listing.sponsorship === 'offers' ? (
-          <span className="chip" style={{ color: 'var(--good-text)' }}>
-            sponsors visas
-          </span>
-        ) : null}
-        {listing.sponsorship === 'does-not-offer' ? (
-          <span className="chip">no sponsorship</span>
-        ) : null}
-        <DeadlineBadge deadline={listing.deadline} />
-      </div>
-
-      {/* Why this matched, or why you may not qualify. */}
-      {listing.fit && !listing.fit.eligible ? (
-        <p
-          className="mt-2.5 rounded-md px-2 py-1.5 text-[0.75rem]"
-          style={{ background: 'var(--critical-soft)', color: 'var(--critical)' }}
-        >
-          <strong>May not be eligible:</strong> {listing.fit.blockers.join('; ')}
-        </p>
-      ) : null}
-
-      {expanded ? (
-        <div className="mt-3 space-y-3 border-t pt-3" style={{ borderColor: 'var(--line)' }}>
-          {listing.fit && listing.fit.reasons.length > 0 ? (
-            <div>
-              <p className="label">Why this match</p>
-              <ul className="space-y-1">
-                {listing.fit.reasons.map((reason) => (
-                  <li key={reason.label} className="flex gap-1.5 text-[0.75rem]">
-                    <span
-                      aria-hidden
-                      style={{
-                        color:
-                          reason.polarity === 'good'
-                            ? 'var(--good-text)'
-                            : reason.polarity === 'bad'
-                              ? 'var(--critical)'
-                              : 'var(--ink-muted)',
-                      }}
-                    >
-                      {reason.polarity === 'good' ? '✓' : reason.polarity === 'bad' ? '✕' : '•'}
-                    </span>
-                    <span>
-                      <strong style={{ fontWeight: 500 }}>{reason.label}</strong>
-                      {': '}
-                      <span style={{ color: 'var(--ink-secondary)' }}>{reason.detail}</span>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-
-          {listing.skills.length > 0 ? (
-            <div>
-              <p className="label">Skills mentioned</p>
-              <div className="flex flex-wrap gap-1">
-                {listing.skills.map((skill) => (
-                  <span key={skill} className="chip">
-                    {skill}
-                  </span>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {(listing.requires_cover_letter ||
-            listing.requires_transcript ||
-            listing.requires_portfolio) && (
-            <div>
-              <p className="label">Application asks for</p>
-              <div className="flex flex-wrap gap-1">
-                {listing.requires_cover_letter ? <span className="chip">cover letter</span> : null}
-                {listing.requires_transcript ? <span className="chip">transcript</span> : null}
-                {listing.requires_portfolio ? <span className="chip">portfolio</span> : null}
-              </div>
-            </div>
-          )}
-
-          {listing.description ? (
-            <div>
-              <p className="label">Description</p>
-              <p
-                className="text-[0.75rem] leading-relaxed whitespace-pre-line"
-                style={{ color: 'var(--ink-secondary)' }}
-              >
-                {truncate(listing.description, 1400)}
-              </p>
-            </div>
-          ) : null}
-
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[0.75rem] sm:grid-cols-3">
-            <Detail label="Posted" value={formatDate(posted)} />
-            <Detail label="Deadline" value={formatDate(listing.deadline)} />
-            <Detail label="Starts" value={formatDate(listing.start_date)} />
-            <Detail label="Degrees" value={listing.degrees.join(', ') || 'Not specified'} />
-            <Detail label="Class years" value={listing.class_years.join(', ') || 'Not specified'} />
-            <Detail label="Source" value={listing.source} />
-          </dl>
-        </div>
-      ) : null}
-
-      {/* Actions */}
-      <div className="mt-3 flex flex-wrap items-center gap-1.5">
-        <a
-          href={listing.apply_url}
-          target="_blank"
-          rel="noopener noreferrer nofollow"
-          className="btn btn-primary btn-sm"
-        >
-          Apply <ExternalIcon />
-        </a>
-
-        {listing.applied ? (
-          <a href={`/tracker/${listing.application_id}`} className="btn btn-sm">
-            Open in tracker
-          </a>
-        ) : (
-          <button type="button" className="btn btn-sm" onClick={() => onTrack(listing)}>
-            Track this
+          <span className="flex-1" />
+          <button type="button" className="btn btn-icon" onClick={() => onHide(listing)} title="Not interested (h)" aria-label="Not interested: hide this listing">
+            <Icon.ban />
           </button>
+          <button
+            type="button"
+            className="btn btn-icon"
+            onClick={() => onBookmark(listing)}
+            aria-pressed={listing.bookmarked}
+            aria-label={listing.bookmarked ? 'Remove from saved' : 'Save (s)'}
+            title={listing.bookmarked ? 'Saved' : 'Save (s)'}
+            style={listing.bookmarked ? { color: '#e5484d' } : undefined}
+          >
+            <Icon.heart filled={listing.bookmarked} />
+          </button>
+          {listing.applied ? (
+            <a href={`/tracker/${listing.application_id}`} className="btn btn-pill">
+              Applied ✓
+            </a>
+          ) : onApplyTrack ? (
+            <button type="button" className="btn btn-primary px-5 py-2.5 uppercase" onClick={() => onApplyTrack(listing)} title="Opens the application and tracks it as Applied (a)">
+              Apply now
+            </button>
+          ) : (
+            <>
+              <button type="button" className="btn btn-pill" onClick={() => onTrack(listing)}>
+                Track
+              </button>
+              <a href={listing.apply_url} target="_blank" rel="noopener noreferrer nofollow" className="btn btn-primary px-5 py-2.5 uppercase">
+                Apply now
+              </a>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Match panel */}
+      <div className="m-2 ml-0 hidden w-40 shrink-0 flex-col items-center rounded-2xl px-3 py-4 text-center sm:flex xl:w-44" style={{ background: 'var(--match-panel)', color: '#fff' }}>
+        {listing.match ? (
+          <>
+            <MatchRing score={listing.match.score} />
+            <p className="mt-2 text-[0.75rem] font-bold tracking-[0.08em] uppercase">{matchLabel(listing.match.score)}</p>
+          </>
+        ) : (
+          <>
+            <span className="flex h-[84px] w-[84px] items-center justify-center rounded-full" style={{ background: 'rgba(255,255,255,0.1)' }}>
+              <Icon.lock />
+            </span>
+            <p className="mt-2 text-[0.75rem] font-bold tracking-[0.08em] uppercase">Match score</p>
+            <a href="/profile" className="mt-1 text-[0.6875rem] underline opacity-70" onClick={stop}>
+              Add your resume
+            </a>
+          </>
         )}
-
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm"
-          onClick={() => onBookmark(listing)}
-          aria-pressed={listing.bookmarked}
-        >
-          {listing.bookmarked ? '★ Shortlisted' : '☆ Shortlist'}
-        </button>
-
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm"
-          onClick={() => setExpanded((v) => !v)}
-          aria-expanded={expanded}
-        >
-          {expanded ? 'Less' : 'Details'}
-        </button>
-
-        <span className="flex-1" />
-
-        <span className="text-[0.6875rem]" style={{ color: 'var(--ink-muted)' }}>
-          {relativeTime(posted)}
-        </span>
-
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm"
-          onClick={() => onHide(listing)}
-          title="Hide this listing from future searches"
-          aria-label="Hide this listing"
-        >
-          ✕
-        </button>
+        <div className="my-3 h-px w-full" style={{ background: 'rgba(255,255,255,0.12)' }} />
+        <ul className="w-full space-y-1 text-left text-[0.6875rem]">
+          {signals.slice(0, 3).map((signal) => (
+            <li key={signal} className="flex items-center gap-1.5">
+              <span style={{ color: '#3ee8a0' }}>
+                <Icon.check />
+              </span>
+              {signal}
+            </li>
+          ))}
+          {listing.eligibility.status === 'ineligible' ? (
+            <li className="flex items-start gap-1.5" style={{ color: '#ff9b8a' }} title={listing.eligibility.flags.join('\n')}>
+              ✕ <span className="line-clamp-2">{listing.eligibility.flags[0]}</span>
+            </li>
+          ) : null}
+        </ul>
       </div>
     </article>
   );
+});
+
+export function MatchPill({ score, large = false }: { score: number; large?: boolean }) {
+  const cls = score >= 70 ? 'badge-good' : score >= 40 ? 'badge-warn' : 'badge-neutral';
+  return (
+    <span className={`badge tnum ${cls}`} style={large ? { fontSize: '0.8125rem', padding: '0.2rem 0.5rem' } : undefined} title="Share of this posting's top ATS keywords found in your resume and skills">
+      {score}% match
+    </span>
+  );
 }
 
-function Detail({ label, value }: { label: string; value: string }) {
+export function EligibilityPill({ listing }: { listing: InternshipView }) {
+  const e = listing.eligibility;
+  if (e.status === 'unclear' && e.flags.length === 0) {
+    return listing.underclass_ok === 0 ? <span className="badge badge-neutral">Juniors+ / grads</span> : null;
+  }
+  const cls = e.status === 'eligible' ? 'badge-good' : e.status === 'likely' ? 'badge-warn' : e.status === 'ineligible' ? 'badge-bad' : 'badge-neutral';
+  const icon = e.status === 'eligible' ? '✓' : e.status === 'ineligible' ? '✕' : '•';
   return (
-    <div>
-      <dt className="text-[0.625rem] tracking-wide uppercase" style={{ color: 'var(--ink-muted)' }}>
-        {label}
-      </dt>
-      <dd className="truncate" title={value}>
-        {value}
-      </dd>
-    </div>
+    <span className={`badge ${cls}`} title={e.flags.join('\n') || e.label}>
+      <span aria-hidden>{icon}</span> {e.label}
+    </span>
   );
 }
